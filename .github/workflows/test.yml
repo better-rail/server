@@ -1,0 +1,15 @@
+name: CI
+on: push
+jobs:
+  test-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: borales/actions-yarn@v4
+        name: install dependencies
+        with:
+          cmd: install
+      - uses: borales/actions-yarn@v4
+        name: test server
+        with:
+          cmd: test
