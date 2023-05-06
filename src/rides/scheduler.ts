@@ -137,6 +137,9 @@ export class Scheduler {
 
     if (success) {
       this.ride.lastRecievedId = notificaionId
+      if (isEmpty(this.notificationsToSend)) {
+        endRideNotifications(this.ride.rideId)
+      }
     }
 
     return success
@@ -216,7 +219,6 @@ export class Scheduler {
    * - Checks if the notification wasn't sent send
    * - Removes it from `this.notificationsToSend`
    * - Updates last sent notification
-   * - Ends the scheduler if the ride has ended
    * @param notification Notification to send
    */
   private sendNotification(notification: NotificationPayload) {
@@ -225,11 +227,7 @@ export class Scheduler {
 
       const indexToRemove = this.notificationsToSend.indexOf(notification)
       this.notificationsToSend.splice(indexToRemove, 1)
-      if (isEmpty(this.notificationsToSend)) {
-        endRideNotifications(this.ride.rideId)
-      } else {
-        this.updateLastNotification(notification)
-      }
+      this.updateLastNotification(notification)
     }
   }
 
