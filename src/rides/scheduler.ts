@@ -1,6 +1,6 @@
-import dayjs from "dayjs"
 import { Logger } from "winston"
-import { head, isEmpty, omit } from "lodash"
+import dayjs, { Dayjs } from "dayjs"
+import { head, isEmpty } from "lodash"
 import isSameOrBefore from "dayjs/plugin/isSameOrBefore"
 import { scheduleJob, Job, RecurrenceRule } from "node-schedule"
 
@@ -24,6 +24,7 @@ export class Scheduler {
   private route: RouteItem
   private updateDelayJob?: Job
   private sendNotificationsJob?: Job
+  private lastConfirmationTime?: Dayjs
   private lastSentNotification?: NotificationPayload
   private notificationsToSend: NotificationPayload[]
 
@@ -76,6 +77,13 @@ export class Scheduler {
 
       // Start notification job
       this.sendNotificationsJob = scheduleJob("* * * * *", (fireDate) => {
+        // End ride if user didn't confirm notification reciept for more than 10 minutes
+        const didRecieveLastNotification = this.ride.lastNotificationId === this.ride.lastRecievedId
+        const minutesSinceLastNotification = dayjs().diff(this.lastConfirmationTime, "minutes")
+        if (!didRecieveLastNotification && minutesSinceLastNotification > 10) {
+          return endRideNotifications(this.ride.rideId)
+        }
+
         // If there's a new notification to send, send it now
         const notificationToSendNow = getNotificationToSend(this.notificationsToSend, fireDate)
         if (notificationToSendNow) {
@@ -85,12 +93,12 @@ export class Scheduler {
         // If there isn't new notification to send, update the delay of the current state
         if (this.lastSentNotification && this.lastSentNotification.state.id > 0) {
           const notificationToSend = getUpdatedLastNotification(this.route, this.ride) || this.lastSentNotification
-          const didRecieveLastNotification = this.ride.lastNotificationId === this.ride.lastRecievedId
 
+          // If user didn't recieve last notification, try to send with higher priority for 3 minutes
           return this.sendNotification({
             ...notificationToSend,
+            shouldSendImmediately: !didRecieveLastNotification && minutesSinceLastNotification < 3,
             alert: didRecieveLastNotification ? undefined : notificationToSend.alert,
-            shouldSendImmediately: !didRecieveLastNotification,
           })
         }
 
@@ -122,27 +130,32 @@ export class Scheduler {
   }
 
   async updateRideToken(token: string) {
-    const success = await updateRideToken(this.ride.rideId, token)
+    const result = await updateRideToken(this.ride.rideId, token)
 
-    if (success) {
+    if (result) {
       this.ride.token = token
       this.notificationsToSend = this.buildRideNotifications()
     }
 
-    return success
+    return result
   }
 
   async confirmNotificationRecieved(notificaionId: number) {
-    const success = await updateLastRecievedNotificationId(this.ride.rideId, notificaionId)
+    if (notificaionId < this.ride.lastRecievedId) {
+      return false
+    }
 
-    if (success) {
+    const result = await updateLastRecievedNotificationId(this.ride.rideId, notificaionId)
+
+    if (result) {
       this.ride.lastRecievedId = notificaionId
+      this.lastConfirmationTime = dayjs().second(0)
       if (isEmpty(this.notificationsToSend)) {
         endRideNotifications(this.ride.rideId)
       }
     }
 
-    return success
+    return result
   }
 
   /**
