@@ -31,7 +31,7 @@ export const addRide = async (ride: RideRequest): Promise<Ride | false> => {
 
     await Promise.all(promises)
     logger.info(logNames.redis.rides.add.success, { rideId, token: ride.token })
-    return { ...ride, rideId, lastNotificationId: 0 }
+    return { ...ride, rideId, lastNotificationId: 0, lastRecievedId: 0 }
   } catch (error) {
     logger.error(logNames.redis.rides.add.failed, { error, rideId, token: ride.token })
     return false
@@ -49,6 +49,18 @@ export const updateLastRideNotification = async (rideId: string, notificationId:
     return true
   } catch (error) {
     logger.error(logNames.redis.rides.updateNotificationId.failed, { error, rideId, id: notificationId })
+    return false
+  }
+}
+
+export const updateLastRecievedNotificationId = async (rideId: string, notificationId: number) => {
+  try {
+    await client.hSet(getKey(rideId), "lastRecievedId", notificationId)
+
+    logger.info(logNames.redis.rides.updateReceivedNotificationId.success, { rideId, notificationId })
+    return true
+  } catch (error) {
+    logger.error(logNames.redis.rides.updateReceivedNotificationId.failed, { error, rideId, notificationId })
     return false
   }
 }

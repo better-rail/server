@@ -52,6 +52,29 @@ export const updateRideToken = async (rideId: string, token: string) => {
   }
 }
 
+export const confirmNotificationReceived = async (rideId: string, notificationId: number) => {
+  try {
+    const scheduler = schedulers[rideId]
+
+    if (!scheduler) {
+      await deleteRide(rideId)
+      throw new Error("Scheduler not found")
+    }
+
+    const success = await scheduler.confirmNotificationRecieved(notificationId)
+
+    if (!success) {
+      throw new Error("Scheduler didn't stop")
+    }
+
+    scheduler.logger.info(logNames.scheduler.confirmNotificationReceived.success, { notificationId })
+    return true
+  } catch (error) {
+    logger.error(logNames.scheduler.confirmNotificationReceived.failed, { error, rideId, notificationId })
+    return false
+  }
+}
+
 export const endRideNotifications = async (rideId: string) => {
   try {
     const scheduler = schedulers[rideId]

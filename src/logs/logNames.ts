@@ -28,6 +28,10 @@ export const logNames = {
         success: "Updated last notification id in redis",
         failed: "Failed to update last notification id in redis",
       },
+      updateReceivedNotificationId: {
+        success: "Updated recieved notification id in redis",
+        failed: "Failed to update recieved notification id in redis",
+      },
       updateToken: {
         success: "Updated token for ride in redis",
         failed: "Failed to update token for ride in redis",
@@ -54,6 +58,10 @@ export const logNames = {
     updateRideToken: {
       success: "Updated ride token for ride",
       failed: "Failed to update ride token for ride",
+    },
+    confirmNotificationReceived: {
+      success: "Updated last recieved notification id for ride",
+      failed: "Failed to update last recieved notification id for ride",
     },
   },
   notifications: {

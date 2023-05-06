@@ -18,6 +18,11 @@ export const UpdateRideTokenBody = z.object({
   token: z.string(),
 })
 
+export const ConfirmReceiptBody = z.object({
+  rideId: z.string(),
+  notificationId: z.number(),
+})
+
 export const DeleteRideBody = z.object({
   rideId: z.string(),
 })

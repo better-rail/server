@@ -89,13 +89,16 @@ export const buildNotifications = (
     .sort((a, b) => (a.time.isAfter(b.time) ? 1 : -1))
     .map((notification, index) => ({
       ...notification,
-      id: index + 1,
+      state: {
+        ...notification.state,
+        id: index + 1,
+      },
     }))
     .filter((notification) => {
       if (!filterPastNotifications) {
         return true
       } else if (isNumber(lastNotificationId)) {
-        return notification.id > lastNotificationId
+        return notification.state.id > lastNotificationId
       } else {
         const notificationTime = notification.time.add(notification.state.delay, "minutes")
         return notificationTime.isAfter(dayjs())
@@ -106,5 +109,5 @@ export const buildNotifications = (
 export const getUpdatedLastNotification = (route: RouteItem, ride: Ride, lastNotificationId?: number) => {
   const notificationId = lastNotificationId ?? ride.lastNotificationId
   const notifications = buildNotifications(route, ride, false)
-  return notifications.find((current) => current.id === notificationId)
+  return notifications.find((current) => current.state.id === notificationId)
 }

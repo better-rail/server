@@ -30,7 +30,9 @@ export type BuildNotificationPayload = {
 }
 
 export type NotificationPayload = BuildNotificationPayload & {
-  id: number
+  state: {
+    id: number
+  }
 }
 
 export type ApnToken = {

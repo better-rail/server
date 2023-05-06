@@ -34,12 +34,12 @@ export const buildWaitForTrainNotiifcation = (route: RouteItem, ride: Ride): Not
   const train = route.trains[0]
 
   return {
-    id: 0,
     token: ride.token,
     provider: ride.provider,
     shouldSendImmediately: false,
     time: dayjs(train.departureTime).subtract(2, "minute"),
     state: {
+      id: 0,
       delay: train.delay,
       status: Status.waitForTrain,
       nextStationId: train.originStationId,

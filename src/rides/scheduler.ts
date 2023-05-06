@@ -15,8 +15,8 @@ import { getRouteForRide } from "../requests"
 import { endRideNotifications } from "./index"
 import { NotificationPayload } from "../types/notification"
 import { buildNotifications, getUpdatedLastNotification } from "../utils/ride-utils"
-import { deleteRide, updateLastRideNotification, updateRideToken } from "../data/redis"
 import { buildWaitForTrainNotiifcation, getNotificationToSend, rideUpdateSecond } from "../utils/notify-utils"
+import { deleteRide, updateLastRecievedNotificationId, updateLastRideNotification, updateRideToken } from "../data/redis"
 
 export class Scheduler {
   logger: Logger
@@ -70,7 +70,7 @@ export class Scheduler {
     if (env === "production") {
       this.startUpdateDelayJob()
       // Send current state immediately to client
-      if (this.lastSentNotification && this.lastSentNotification.id > 0) {
+      if (this.lastSentNotification && this.lastSentNotification.state.id > 0) {
         this.sendNotification({ ...this.lastSentNotification, shouldSendImmediately: true })
       }
 
@@ -83,11 +83,15 @@ export class Scheduler {
         }
 
         // If there isn't new notification to send, update the delay of the current state
-        if (this.lastSentNotification && this.lastSentNotification.id > 0) {
-          const notificationWithUpdatedDelay = getUpdatedLastNotification(this.route, this.ride)
-          return this.sendNotification(
-            omit(notificationWithUpdatedDelay || this.lastSentNotification, ["alert", "shouldSendImmediately"]),
-          )
+        if (this.lastSentNotification && this.lastSentNotification.state.id > 0) {
+          const notificationToSend = getUpdatedLastNotification(this.route, this.ride) || this.lastSentNotification
+          const didRecieveLastNotification = this.ride.lastNotificationId === this.ride.lastRecievedId
+
+          return this.sendNotification({
+            ...notificationToSend,
+            alert: didRecieveLastNotification ? undefined : notificationToSend.alert,
+            shouldSendImmediately: !didRecieveLastNotification,
+          })
         }
 
         // If the ride didn't depart yet, send wait for train notification
@@ -128,18 +132,28 @@ export class Scheduler {
     return success
   }
 
+  async confirmNotificationRecieved(notificaionId: number) {
+    const success = await updateLastRecievedNotificationId(this.ride.rideId, notificaionId)
+
+    if (success) {
+      this.ride.lastRecievedId = notificaionId
+    }
+
+    return success
+  }
+
   /**
    * @param isInitialRun Should be true only when called from `this.start()`, used to get the initial
    *                     values for last send notification
    * @returns Filtered notifications to send
    */
   private buildRideNotifications(isInitialRun: boolean = false) {
-    const notifications = buildNotifications(this.route, this.ride, env === "production", this.lastSentNotification?.id)
+    const notifications = buildNotifications(this.route, this.ride, env === "production", this.lastSentNotification?.state?.id)
 
     if (env === "production") {
       // If it's the first run of this function, get the last sent notification
       if (isInitialRun && !isEmpty(notifications)) {
-        const lastNotificationId = notifications[0].id - 1
+        const lastNotificationId = notifications[0].state.id - 1
         const notification = getUpdatedLastNotification(this.route, this.ride, lastNotificationId)
         this.updateLastNotification(notification)
       }
@@ -206,7 +220,7 @@ export class Scheduler {
    * @param notification Notification to send
    */
   private sendNotification(notification: NotificationPayload) {
-    if (!this.lastSentNotification || notification.id >= this.lastSentNotification?.id) {
+    if (!this.lastSentNotification || notification.state.id >= this.lastSentNotification?.state.id) {
       sendNotification(notification, this.logger)
 
       const indexToRemove = this.notificationsToSend.indexOf(notification)
@@ -231,7 +245,7 @@ export class Scheduler {
       this.lastSentNotification = notification
     }
 
-    this.ride.lastNotificationId = notification?.id || 0
+    this.ride.lastNotificationId = notification?.state?.id || 0
     return updateLastRideNotification(this.ride.rideId, this.ride.lastNotificationId)
   }
 }

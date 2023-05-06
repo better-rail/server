@@ -20,6 +20,7 @@ export type RideRequest = z.infer<typeof RideRequestSchema>
 export const RideSchema = RideRequestSchema.extend({
   rideId: z.string(),
   lastNotificationId: z.number(),
+  lastRecievedId: z.number(),
 })
 
 export type Ride = z.infer<typeof RideSchema>
