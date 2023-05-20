@@ -84,7 +84,7 @@ export class Scheduler {
 
         // If there isn't new notification to send, update the delay of the current state
         if (this.lastSentNotification && this.lastSentNotification.id > 0) {
-          const notificationWithUpdatedDelay = getUpdatedLastNotification(this.route, this.ride)
+          const notificationWithUpdatedDelay = getUpdatedLastNotification(this.route, this.ride, this.lastSentNotification.id)
           return this.sendNotification(
             omit(notificationWithUpdatedDelay || this.lastSentNotification, ["alert", "shouldSendImmediately"]),
           )
@@ -209,8 +209,7 @@ export class Scheduler {
     if (!this.lastSentNotification || notification.id >= this.lastSentNotification?.id) {
       sendNotification(notification, this.logger)
 
-      const indexToRemove = this.notificationsToSend.indexOf(notification)
-      this.notificationsToSend.splice(indexToRemove, 1)
+      this.notificationsToSend = this.notificationsToSend.filter((notificationToSend) => notificationToSend.id > notification.id)
       if (isEmpty(this.notificationsToSend)) {
         endRideNotifications(this.ride.rideId)
       } else {
