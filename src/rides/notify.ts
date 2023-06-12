@@ -57,7 +57,7 @@ const sendAndroidNotification = async (payload: NotificationPayload, logger: Log
       nextStationId: payload.state.nextStationId.toString(),
     },
     android: {
-      priority: payload.shouldSendImmediately ? "high" : "normal",
+      priority: "high",
     },
   }
 
