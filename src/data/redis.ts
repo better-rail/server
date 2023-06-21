@@ -1,6 +1,6 @@
 import { createClient } from "redis"
 import { RedisClientType } from "@redis/client"
-import { compact, forEach, mapValues } from "lodash"
+import { compact, forEach, mapValues, omit } from "lodash"
 
 import { redisUrl } from "./config"
 import { logNames, logger } from "../logs"
@@ -20,7 +20,9 @@ export const connectToRedis = async () => {
 
 export const addRide = async (ride: Ride): Promise<boolean> => {
   try {
-    const promises = Object.entries(ride).map(([key, value]) => client.hSet(getKey(ride.rideId), key, JSON.stringify(value)))
+    const promises = Object.entries(omit(ride, "rideId")).map(([key, value]) =>
+      client.hSet(getKey(ride.rideId), key, JSON.stringify(value)),
+    )
     await Promise.all(promises)
 
     logger.info(logNames.redis.rides.add.success, { rideId: ride.rideId, token: ride.token })
