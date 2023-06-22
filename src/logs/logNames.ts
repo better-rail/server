@@ -44,7 +44,7 @@ export const logNames = {
     },
     rescheduleRide: {
       success: "Rescheduled notifications for ride",
-      failed: "Failed to reregister notifications for ride",
+      failed: "Failed to re-register notifications for ride",
     },
     updateDelay: {
       register: "Registered delay updater",
