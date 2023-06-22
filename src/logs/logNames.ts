@@ -38,9 +38,13 @@ export const logNames = {
     scheduleExisting: "Scheduled existing rides from redis",
     rideInPast: "The requested ride is in the past",
     rideInFuture: "The requested ride is in the future",
-    registerRide: {
+    scheduleRide: {
       success: "Scheduled notifications for ride",
       failed: "Failed to register notifications for ride",
+    },
+    rescheduleRide: {
+      success: "Rescheduled notifications for ride",
+      failed: "Failed to reregister notifications for ride",
     },
     updateDelay: {
       register: "Registered delay updater",

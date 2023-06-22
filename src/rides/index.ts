@@ -7,6 +7,7 @@ const schedulers: Record<string, Scheduler> = {}
 
 export const startRideNotifications = async (ride: Ride, isExisting: boolean = false) => {
   const rideLogger = logger.child({ rideId: ride.rideId, token: ride.token })
+  const registerRideLog = isExisting ? logNames.scheduler.rescheduleRide : logNames.scheduler.scheduleRide
 
   try {
     const scheduler = await Scheduler.create(ride, isExisting, rideLogger)
@@ -21,10 +22,10 @@ export const startRideNotifications = async (ride: Ride, isExisting: boolean = f
     scheduler.start()
     schedulers[ride.rideId] = scheduler
 
-    rideLogger.info(logNames.scheduler.registerRide.success, { ...ride })
+    rideLogger.info(registerRideLog.success, { ...ride })
     return { success: true, rideId: ride.rideId }
   } catch (error) {
-    rideLogger.error(logNames.scheduler.registerRide.failed, { error, ...ride })
+    rideLogger.error(registerRideLog.failed, { error, ...ride })
     return { success: false }
   }
 }
