@@ -14,7 +14,7 @@
     },
     "exchange": {
       "waitTime": "Wait %{waitTime} for your next train.",
-      "stayInPlatform": "Stay on Platform %{platform}.",
+      "stayOnPlatform": "Stay on Platform %{platform}.",
       "changePlatform": "Change to Platform %{platform}."
     }
   }
