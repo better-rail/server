@@ -49,13 +49,6 @@ const sendAppleNotification = async (payload: NotificationPayload, route: RouteI
 }
 
 const sendAndroidNotification = async (payload: NotificationPayload, route: RouteItem, logger: Logger) => {
-  const notification =
-    payload.alert &&
-    JSON.stringify({
-      title: payload.alert.title,
-      body: payload.alert.text,
-    })
-
   const message: Message = {
     token: payload.token,
     data: {
@@ -63,12 +56,18 @@ const sendAndroidNotification = async (payload: NotificationPayload, route: Rout
       status: payload.state.status,
       delay: payload.state.delay.toString(),
       nextStationId: payload.state.nextStationId.toString(),
-      notifee: notification as string,
     },
     android: {
       ttl: 90 * 1000,
       priority: "high",
     },
+  }
+
+  if (payload.alert) {
+    message.data!.notifee = JSON.stringify({
+      title: payload.alert.title,
+      body: payload.alert.text,
+    })
   }
 
   try {
