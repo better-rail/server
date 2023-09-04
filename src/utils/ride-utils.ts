@@ -58,16 +58,16 @@ export const exchangeTrainPrompt = (trains: RouteTrain[], gotOffTrain: number, l
     texts.push(unsafeChangeText)
   }
 
-  const waitTime = localizedDifference(departureTime, arrivalTime, locale)
-  const waitTimeText = translate("notifications.exchange.waitTime", locale, { waitTime })
-  texts.push(waitTimeText)
-
   const platformKey = previous.destinationPlatform === next.originPlatform ? "stayOnPlatform" : "changePlatform"
   const platformText = translate(platformKey, locale, {
     scope: "notifications.exchange",
     platform: next.originPlatform,
   })
   texts.push(platformText)
+
+  const waitTime = localizedDifference(arrivalTime, departureTime, locale)
+  const waitTimeText = translate("notifications.exchange.waitTime", locale, { waitTime })
+  texts.push(waitTimeText)
 
   return texts.join(" ")
 }
