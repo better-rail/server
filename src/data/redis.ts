@@ -14,6 +14,7 @@ export const connectToRedis = async () => {
     await client.connect()
     logger.info(logNames.redis.connect.success)
   } catch (error) {
+    console.log(error, (error as any)?.message)
     logger.error(logNames.redis.connect.failed, { error })
   }
 }
