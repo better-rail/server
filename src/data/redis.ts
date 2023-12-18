@@ -9,14 +9,14 @@ import { logNames, logger } from "../logs"
 let client: RedisClientType
 
 export const connectToRedis = async () => {
-  try {
-    client = createClient({ url: redisUrl })
-    await client.connect()
-    logger.info(logNames.redis.connect.success)
-  } catch (error) {
-    console.log(error, (error as any)?.message)
+  client = createClient({ url: redisUrl })
+
+  client.on("error", (error) => {
     logger.error(logNames.redis.connect.failed, { error })
-  }
+  })
+
+  await client.connect()
+  logger.info(logNames.redis.connect.success)
 }
 
 export const addRide = async (ride: Ride): Promise<boolean> => {
