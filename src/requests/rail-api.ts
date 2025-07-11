@@ -16,7 +16,7 @@ export class RailApi {
     this.axiosInstance = axios.create({
       baseURL: railUrl,
       timeout: 30000,
-      httpsAgent: new HttpsProxyAgent(proxyUrl),
+      httpsAgent: proxyUrl && new HttpsProxyAgent(proxyUrl),
       headers: {
         Accept: "application/json",
         "Ocp-Apim-Subscription-Key": railApiKey,
