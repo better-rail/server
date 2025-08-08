@@ -1,6 +1,6 @@
 import { Router } from "express"
 
-import { proxyRouter } from "./proxy"
+import { railProxy } from "./proxy"
 import { buildRide } from "../utils/ride-utils"
 import { RideRequestSchema } from "../types/ride"
 import { DeleteRideBody, UpdateRideTokenBody, bodyValidator } from "./validations"
@@ -26,6 +26,6 @@ router.delete("/ride", bodyValidator(DeleteRideBody), async (req, res) => {
   res.status(success ? 200 : 500).send({ success })
 })
 
-router.use("/rail-api", proxyRouter)
+router.use("/rail-api", railProxy)
 
 export { router }

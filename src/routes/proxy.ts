@@ -1,41 +1,20 @@
-import { Router } from "express"
-import { railApi } from "../requests/rail-api"
+import { createProxyMiddleware, Options } from "http-proxy-middleware"
+import { railUrl, railApiKey } from "../data/config"
 
-const router = Router()
-
-// Proxy endpoint for rail API requests (for users outside Israel)
-router.get("/*", async (req, res) => {
-  try {
-    const path = (req.params as any)[0] || ""
-    const queryString = req.url.split("?")[1] || ""
-    const fullPath = queryString ? `${path}?${queryString}` : path
-
-    const response = await railApi.axiosInstance.get(fullPath)
-    res.status(response.status).json(response.data)
-  } catch (error: any) {
-    console.error("Rail API proxy error:", error.message)
-    res.status(error.response?.status || 500).json({
+// Create proxy middleware for rail API
+const railProxy = createProxyMiddleware({
+  target: railUrl,
+  changeOrigin: true,
+  onProxyReq: (proxyReq: any) => {
+    proxyReq.setHeader("Accept", "application/json")
+    proxyReq.setHeader("Ocp-Apim-Subscription-Key", railApiKey)
+  },
+  onError: (err: any, req: any, res: any) => {
+    res.status(500).json({
       error: "Failed to fetch rail data",
-      message: error.message,
+      message: err.message,
     })
-  }
-})
+  },
+} as Options)
 
-router.post("/*", async (req, res) => {
-  try {
-    const path = (req.params as any)[0] || ""
-    const queryString = req.url.split("?")[1] || ""
-    const fullPath = queryString ? `${path}?${queryString}` : path
-
-    const response = await railApi.axiosInstance.post(fullPath, req.body)
-    res.status(response.status).json(response.data)
-  } catch (error: any) {
-    console.error("Rail API proxy error:", error.message)
-    res.status(error.response?.status || 500).json({
-      error: "Failed to fetch rail data",
-      message: error.message,
-    })
-  }
-})
-
-export { router as proxyRouter }
+export { railProxy }
