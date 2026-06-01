@@ -61,8 +61,8 @@ const railProxy = async (req: Request, res: Response) => {
     // Preserve the query string — the GET endpoints (railupdates, station info)
     // depend on `LanguageId`/`SystemType` params, and an old client routes every
     // request through here once it has fallen back to the proxy.
-    const queryIndex = req.originalUrl.indexOf("?")
-    const search = queryIndex === -1 ? "" : req.originalUrl.slice(queryIndex)
+    const queryIndex = req.url.indexOf("?")
+    const search = queryIndex === -1 ? "" : req.url.slice(queryIndex)
 
     const url = `${railUrl}${path}${search}`
     const response = await fetch(url, {
