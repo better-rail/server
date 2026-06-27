@@ -82,6 +82,9 @@ export const logNames = {
       error: "Postgres pool error",
     },
   },
+  platforms: {
+    failed: "Failed to fetch platforms from the Israel Railways API",
+  },
   gtfs: {
     noActiveFeed: "No active GTFS feed in the database",
     feedExpiring: "Active GTFS feed is within 2 days of its validity end date",

@@ -31,7 +31,9 @@ To follow these steps, ensure that [Bun](https://bun.sh) is installed (the serve
 
 ### Timetable data: GTFS (Israel MOT)
 
-The train timetable comes from the **Israel MOT GTFS** static feed loaded into
+The train timetable comes from the **Israel MOT GTFS** static feed
+(`Gtfs_10_days.zip` — the current canonical export with `calendar_dates`,
+`feed_info`, `levels`, `networks` and the full stops schema) loaded into
 **Postgres**, not the Israel Railways API. The server exposes the legacy
 `searchTrainForMobile` shape (under `/api/v1/rail-api/...`) backed by a rail
 journey planner over the GTFS schedule, so every client (app + native widgets)
@@ -39,6 +41,14 @@ only needed a base-URL change. Announcements, popup messages and station info ar
 **not** migrated — they keep proxying upstream to the Israel Railways API through
 the same `/rail-api` route. Real-time delays (SIRI-SM) are not connected yet, so
 `trainPosition.calcDiffMinutes` is always `0` (see `requests/siri.ts`).
+
+**Platforms:** GTFS has no train→platform link (rail `stop_times` reference
+station-level stops with an empty `platform_code`). The scheduled platforms come
+from the Israel Railways API, fetched **at ingest** (`requests/platforms.ts`,
+one query per route per service-day-type) and baked into
+`stop_times.platform_code` — so the live query path stays pure DB (~99% of rail
+stop_times get a platform). Set `RAIL_URL` / `RAIL_API_KEY` for the ingest;
+without them, platforms are simply left empty.
 
 Station numbers differ between the two systems. The canonical IDs everywhere
 (app, native, Live Activity) stay the Israel-Railways `3700`-style IDs; the GTFS
@@ -53,8 +63,8 @@ coordinates + Hebrew name).
 ```bash
 # one-time / when stations change — build & review the committed mapping
 bun run download --out ./gtfs_data
-bun run verify:mapping --gtfs ./gtfs_data/israel-public-transportation   # fails if a traversed station is unmapped
-bun run build:mapping --gtfs ./gtfs_data/israel-public-transportation    # writes data/station-mapping.json; commit it
+bun run verify:mapping --gtfs ./gtfs_data/gtfs   # fails if a traversed station is unmapped
+bun run build:mapping --gtfs ./gtfs_data/gtfs    # writes data/station-mapping.json; commit it
 
 # load the feed into Postgres (downloads automatically; idempotent by checksum)
 bun run ingest
@@ -74,8 +84,8 @@ mapping.
 - `REDIS_URL`: connection string for redis
 - `MONGO_URL`: connection string for mongodb
 - `DATABASE_URL`: connection string for Postgres (GTFS timetable store)
-- `RAIL_URL`: url of the rail api (still used to proxy announcements / popups / station info)
-- `RAIL_API_KEY`: api key for the rail api (used only by the server-side proxy now)
+- `RAIL_URL`: url of the rail api (used to proxy announcements / popups / station info, and at ingest to fetch platforms)
+- `RAIL_API_KEY`: api key for the rail api (server-side proxy + ingest platform fetch)
 - `PROXY_URL`: url of the proxy service
 - `APPLE_BUNDLE_ID`: bundle id of the iOS app to send notifications to
 - `APPLE_TEAM_ID`: team id for the developer account associated with the iOS app

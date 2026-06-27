@@ -1,16 +1,16 @@
 /**
- * download.ts — fetch + extract the Israel MOT GTFS main archive.
+ * download.ts — fetch + extract the Israel MOT GTFS feed.
  *
- * The feed regenerates nightly at gtfs.mot.gov.il and is valid ~10 days. We only
- * need the main package (rail journey planning uses nothing from the other
- * archives). NOTE: gtfs.mot.gov.il is not reachable from the dev sandbox — the
- * ingest worker that calls this runs in the user's env / on Railway.
+ * `Gtfs_10_days.zip` is the current canonical MOT feed (10-day validity window,
+ * feed_version 2.0): it ships calendar_dates/feed_info/levels/networks and the
+ * full stops schema (incl. platform_code). The older `israel-public-transportation.zip`
+ * is a reduced/legacy export and should NOT be used.
  */
 import fs from "fs"
 import https from "https"
 import unzipper from "unzipper"
 
-export const GTFS_MAIN_URL = "https://gtfs.mot.gov.il/gtfsfiles/israel-public-transportation.zip"
+export const GTFS_MAIN_URL = "https://gtfs.mot.gov.il/gtfsfiles/Gtfs_10_days.zip"
 
 export async function downloadFeed(zipPath: string, url: string = GTFS_MAIN_URL): Promise<void> {
   await new Promise<void>((resolve, reject) => {

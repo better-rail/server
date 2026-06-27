@@ -457,6 +457,8 @@ export const searchTrain = async (
 
   const queryTs = toEpochMs(date, parseOffsetSec(effectiveHour))
   const endTs = toEpochMs(addDays(date, 1), 0) // bound results to the requested day
+  // Platforms are baked into stop_times.platform_code at ingest, so the response
+  // already carries them (loadDayTrips reads them) — no per-request API call.
   return { result: { travels: planTravels(allTrips, fromStation, toStation, queryTs, endTs) } }
 }
 
