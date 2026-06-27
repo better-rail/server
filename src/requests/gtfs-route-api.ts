@@ -18,12 +18,27 @@
 import { getActiveFeed, query } from "../db"
 import { logNames, logger } from "../logs"
 import { RailApiGetRoutesResult, Train, StopStation, RouteStation } from "../types/rail-response"
-import { parseOffsetSec, railServiceDatesForQuery, toEpochMs } from "../utils/gtfs-time"
+import { addDays, parseOffsetSec, railServiceDatesForQuery, toEpochMs } from "../utils/gtfs-time"
 
-const CHANGE_MS = 3 * 60 * 1000 // minimum transfer time at a station (timestamps are in ms)
+const MIN_CONNECTION_MS = 5 * 60 * 1000 // preferred shortest transfer wait
+const MIN_CONNECTION_RELAXED_MS = 4 * 60 * 1000 // allowed only to avoid a long wait (see below)
+const RELAX_WHEN_WAIT_OVER_MS = 30 * 60 * 1000 // drop to the relaxed minimum only if 5 min would wait longer than this
+const MAX_CONNECTION_MS = 45 * 60 * 1000 // longest allowed transfer wait (no long layovers)
+// Among itineraries arriving at the same time, prefer fewer changes as long as the
+// fewer-change option is at most this much longer than the shortest one.
+const PREFER_FEWER_CHANGES_WINDOW_MS = 20 * 60 * 1000
 const MAX_ONWARD_ROUNDS = 2 // first train + 2 onward trips => up to 2 transfers
-const MAX_RESULTS = 20
-const MAX_FIRST_TRAINS_SCANNED = 150
+// The client renders a whole day at once (no intra-day paging), so return the
+// full day rather than just the next handful of departures.
+const MAX_RESULTS = 120
+const MAX_FIRST_TRAINS_SCANNED = 300
+
+// Transfer-station preference (same trains & arrival, but a nicer place to change).
+const TLV_STATIONS = new Set([3700, 4600, 4900, 3600]) // Savidor, HaShalom, HaHagana, University
+const SAVIDOR_STATION = 3700
+const TIGHT_CONNECTION_MS = 6 * 60 * 1000 // a "tight" change
+const LONG_CONNECTION_MS = 30 * 60 * 1000 // a "long" change (wait > 30 min)
+const SIMILAR_WINDOW_MS = 3 * 60 * 1000 // connection windows within this count as "about the same"
 
 export type StopNode = {
   railId: number
@@ -110,6 +125,7 @@ const completeJourney = (
   firstTrip: TripData,
   boardIndex: number,
   target: number,
+  minConnectionMs: number,
 ): Leg[] | null => {
   const source = firstTrip.stops[boardIndex].railId
   const bestArr = new Map<number, number>()
@@ -132,11 +148,15 @@ const completeJourney = (
     const nextMarked = new Map<number, number>()
     for (const trip of allTrips.values()) {
       if (trip.tripKey === firstTrip.tripKey) continue
-      // earliest stop where a marked station lets us board in time (after a change)
+      // earliest stop where a marked station lets us board within the allowed
+      // connection window (>= 4 min so the change is feasible, <= 1h so we don't
+      // suggest sitting at a station half the night).
       let bIdx = -1
       for (let i = 0; i < trip.stops.length - 1; i++) {
         const ready = marked.get(trip.stops[i].railId)
-        if (ready !== undefined && trip.stops[i].depTs >= ready + CHANGE_MS) {
+        if (ready === undefined) continue
+        const wait = trip.stops[i].depTs - ready
+        if (wait >= minConnectionMs && wait <= MAX_CONNECTION_MS) {
           bIdx = i
           break
         }
@@ -169,6 +189,86 @@ const completeJourney = (
     if (++guard > MAX_ONWARD_ROUNDS + 2) return null // safety against cycles
   }
   return legs
+}
+
+type Boarding = { station: number; window: number; transferTime: number }
+
+/** Is transfer `a` a nicer place to change than `b`? (same trains & arrival either way) */
+const isBetterTransfer = (a: Boarding, b: Boarding): boolean => {
+  const aTight = a.window <= TIGHT_CONNECTION_MS
+  const bTight = b.window <= TIGHT_CONNECTION_MS
+  // Avoid a tight change when a roomier one is available.
+  if (aTight !== bTight) return !aTight
+
+  // In Tel Aviv, do an "extreme" change at Savidor (the central hub): one that's
+  // very tight (<=6 min) or long (both wait > 30 min). This wins over a larger
+  // window — for a long wait you'd rather sit at Savidor than another TLV stop.
+  const bothLong = a.window > LONG_CONNECTION_MS && b.window > LONG_CONNECTION_MS
+  if ((aTight || bothLong) && TLV_STATIONS.has(a.station) && TLV_STATIONS.has(b.station)) {
+    const aSavidor = a.station === SAVIDOR_STATION
+    const bSavidor = b.station === SAVIDOR_STATION
+    if (aSavidor !== bSavidor) return aSavidor
+  }
+
+  // A clearly larger connection window is better, otherwise change as early as possible.
+  if (Math.abs(a.window - b.window) > SIMILAR_WINDOW_MS) return a.window > b.window
+  if (a.transferTime !== b.transferTime) return a.transferTime < b.transferTime
+  return a.window > b.window
+}
+
+/**
+ * Move each change to the nicest station the two trains share, keeping the same
+ * trains and arrival time. The journey planner picks transfer points to minimise
+ * arrival; this re-picks *where* to change for comfort (larger window > earliest >
+ * Savidor for tight Tel Aviv changes). Mutates `legs` in place.
+ */
+const optimizeTransfers = (allTrips: DayTrips, legs: Leg[], minConnectionMs: number): void => {
+  for (let i = 0; i < legs.length - 1; i++) {
+    const f1 = allTrips.get(legs[i].tripKey)!
+    const f2 = allTrips.get(legs[i + 1].tripKey)!
+    const maxAlight2 = legs[i + 1].alightIndex
+
+    // Earliest index F2 stops at each station, before it alights at this leg's end.
+    const f2StationIndex = new Map<number, number>()
+    for (let p2 = 0; p2 < maxAlight2; p2++) {
+      const st = f2.stops[p2].railId
+      if (!f2StationIndex.has(st)) f2StationIndex.set(st, p2)
+    }
+
+    // Best shared station to change at: ride F1 past its boarding stop, board F2.
+    let best: (Boarding & { p1: number; p2: number }) | null = null
+    for (let p1 = legs[i].boardIndex + 1; p1 < f1.stops.length; p1++) {
+      const st = f1.stops[p1].railId
+      const p2 = f2StationIndex.get(st)
+      if (p2 === undefined) continue
+      const window = f2.stops[p2].depTs - f1.stops[p1].arrTs
+      if (window < minConnectionMs || window > MAX_CONNECTION_MS) continue
+      const cand = { station: st, window, transferTime: f1.stops[p1].arrTs, p1, p2 }
+      if (best === null || isBetterTransfer(cand, best)) best = cand
+    }
+
+    if (best) {
+      legs[i].alightIndex = best.p1
+      legs[i + 1].boardIndex = best.p2
+    }
+  }
+}
+
+const journeyArrivalTs = (allTrips: DayTrips, legs: Leg[]): number => {
+  const last = legs[legs.length - 1]
+  return allTrips.get(last.tripKey)!.stops[last.alightIndex].arrTs
+}
+
+/** Longest wait at any change in the journey. */
+const maxConnectionWaitMs = (allTrips: DayTrips, legs: Leg[]): number => {
+  let max = 0
+  for (let i = 0; i < legs.length - 1; i++) {
+    const f1 = allTrips.get(legs[i].tripKey)!
+    const f2 = allTrips.get(legs[i + 1].tripKey)!
+    const wait = f2.stops[legs[i + 1].boardIndex].depTs - f1.stops[legs[i].alightIndex].arrTs
+    if (wait > max) max = wait
+  }
+  return max
 }
 
 const buildTrain = (allTrips: DayTrips, leg: Leg): Train => {
@@ -223,13 +323,16 @@ export const planTravels = (
   fromStation: number,
   toStation: number,
   queryTs: number,
+  endTs: number = Infinity,
 ): RailApiGetRoutesResult["result"]["travels"] => {
-  // Candidate first trains: those boardable at the origin after the query time.
+  // Candidate first trains: those boardable at the origin within [queryTs, endTs).
+  // endTs bounds the response to the requested day so it doesn't bleed into the
+  // next day (which the client loads as a separate page).
   const firstTrains: { tripKey: string; boardIndex: number; depTs: number }[] = []
   for (const trip of allTrips.values()) {
     for (let i = 0; i < trip.stops.length - 1; i++) {
       const stop = trip.stops[i]
-      if (stop.railId === fromStation && stop.depTs >= queryTs) {
+      if (stop.railId === fromStation && stop.depTs >= queryTs && stop.depTs < endTs) {
         firstTrains.push({ tripKey: trip.tripKey, boardIndex: i, depTs: stop.depTs })
         break
       }
@@ -237,21 +340,32 @@ export const planTravels = (
   }
   firstTrains.sort((a, b) => a.depTs - b.depTs)
 
-  const travels: RailApiGetRoutesResult["result"]["travels"] = []
+  type Candidate = { travel: RailApiGetRoutesResult["result"]["travels"][number]; depTs: number; arrTs: number }
+  const candidates: Candidate[] = []
   const seen = new Set<string>()
   let scanned = 0
 
   for (const ft of firstTrains) {
-    if (travels.length >= MAX_RESULTS || scanned >= MAX_FIRST_TRAINS_SCANNED) break
+    if (candidates.length >= MAX_RESULTS * 2 || scanned >= MAX_FIRST_TRAINS_SCANNED) break
     scanned++
     const trip = allTrips.get(ft.tripKey)!
 
     let legs: Leg[] | null = null
+    let effectiveMin = MIN_CONNECTION_MS
     const directAlight = trip.stops.findIndex((s, idx) => idx > ft.boardIndex && s.railId === toStation)
     if (directAlight > ft.boardIndex) {
       legs = [{ tripKey: ft.tripKey, boardIndex: ft.boardIndex, alightIndex: directAlight }]
     } else {
-      legs = completeJourney(allTrips, trip, ft.boardIndex, toStation)
+      legs = completeJourney(allTrips, trip, ft.boardIndex, toStation, MIN_CONNECTION_MS)
+      // Relax the 5-min minimum to 4 min only when keeping 5 min would force a wait
+      // over 30 min (or find nothing) — and only if 4 min actually arrives sooner.
+      if (!legs || maxConnectionWaitMs(allTrips, legs) > RELAX_WHEN_WAIT_OVER_MS) {
+        const relaxed = completeJourney(allTrips, trip, ft.boardIndex, toStation, MIN_CONNECTION_RELAXED_MS)
+        if (relaxed && (!legs || journeyArrivalTs(allTrips, relaxed) < journeyArrivalTs(allTrips, legs))) {
+          legs = relaxed
+          effectiveMin = MIN_CONNECTION_RELAXED_MS
+        }
+      }
     }
     if (!legs || legs.length === 0) continue
 
@@ -259,17 +373,57 @@ export const planTravels = (
     if (seen.has(key)) continue
     seen.add(key)
 
+    if (legs.length > 1) optimizeTransfers(allTrips, legs, effectiveMin)
     const trains = legs.map((leg) => buildTrain(allTrips, leg))
-    travels.push({
-      departureTime: trains[0].departureTime,
-      arrivalTime: trains[trains.length - 1].arrivalTime,
-      freeSeats: 0,
-      travelMessages: [],
-      trains,
+    const lastLeg = legs[legs.length - 1]
+    candidates.push({
+      travel: {
+        departureTime: trains[0].departureTime,
+        arrivalTime: trains[trains.length - 1].arrivalTime,
+        freeSeats: 0,
+        travelMessages: [],
+        trains,
+      },
+      depTs: ft.depTs,
+      arrTs: allTrips.get(lastLeg.tripKey)!.stops[lastLeg.alightIndex].arrTs,
     })
   }
 
-  return travels
+  // Keep a single itinerary per arrival time (drops same-arrival, earlier-departure
+  // duplicates). Among those arriving together, prefer the shortest — but if a
+  // route with fewer changes arrives at the same time and is at most 20 min longer,
+  // prefer it (fewer changes beats a small time saving).
+  const changesOf = (c: Candidate) => c.travel.trains.length - 1
+  const byArrival = new Map<number, Candidate[]>()
+  for (const c of candidates) {
+    const list = byArrival.get(c.arrTs)
+    if (list) list.push(c)
+    else byArrival.set(c.arrTs, [c])
+  }
+
+  const chosen: Candidate[] = []
+  for (const list of byArrival.values()) {
+    const minDuration = Math.min(...list.map((c) => c.arrTs - c.depTs))
+    const eligible = list.filter((c) => c.arrTs - c.depTs - minDuration <= PREFER_FEWER_CHANGES_WINDOW_MS)
+    eligible.sort((a, b) => changesOf(a) - changesOf(b) || b.depTs - a.depTs)
+    chosen.push(eligible[0])
+  }
+
+  // Drop dominated itineraries: one that departs no later AND arrives no earlier
+  // than another is strictly worse (e.g. leaves earlier but arrives much later).
+  // Walk latest-departure first, keeping one only if it beats the best arrival so far.
+  chosen.sort((a, b) => b.depTs - a.depTs || a.arrTs - b.arrTs)
+  const kept: Candidate[] = []
+  let minArr = Infinity
+  for (const c of chosen) {
+    if (c.arrTs < minArr) {
+      kept.push(c)
+      minArr = c.arrTs
+    }
+  }
+
+  kept.sort((a, b) => a.depTs - b.depTs)
+  return kept.slice(0, MAX_RESULTS).map((c) => c.travel)
 }
 
 export type ScheduleType = "ByDeparture" | "ByArrival"
@@ -287,16 +441,23 @@ export const searchTrain = async (
     return { result: { travels: [] } }
   }
 
+  // The client keeps sending the current time-of-day even when paging to a future
+  // date; for any day other than today, show the whole day from midnight rather
+  // than from "now". "Today" is the current Israel calendar date (rail is local).
+  const todayIsrael = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(new Date())
+  const effectiveHour = date > todayIsrael ? "00:00" : hour || "00:00"
+
   // Merge the relevant service days into one trip table.
-  const serviceDates = railServiceDatesForQuery(date, hour)
+  const serviceDates = railServiceDatesForQuery(date, effectiveHour)
   const allTrips: DayTrips = new Map()
   for (const serviceDate of serviceDates) {
     const dayTrips = await loadDayTrips(feed.feedId, serviceDate)
     for (const [key, trip] of dayTrips) allTrips.set(key, trip)
   }
 
-  const queryTs = toEpochMs(date, parseOffsetSec(hour || "00:00"))
-  return { result: { travels: planTravels(allTrips, fromStation, toStation, queryTs) } }
+  const queryTs = toEpochMs(date, parseOffsetSec(effectiveHour))
+  const endTs = toEpochMs(addDays(date, 1), 0) // bound results to the requested day
+  return { result: { travels: planTravels(allTrips, fromStation, toStation, queryTs, endTs) } }
 }
 
 export { invalidateDayCacheForFeed }
