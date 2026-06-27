@@ -8,6 +8,7 @@ export const env: Enviroment = (process.env.NODE_ENV as Enviroment) || "test"
 export const port = process.env.PORT || 3000
 export const redisUrl = process.env.REDIS_URL as string
 export const mongoUrl = process.env.MONGO_URL as string
+export const databaseUrl = process.env.DATABASE_URL as string
 export const railUrl = process.env.RAIL_URL as string
 export const railApiKey = process.env.RAIL_API_KEY as string
 export const proxyUrl = process.env.PROXY_URL as string

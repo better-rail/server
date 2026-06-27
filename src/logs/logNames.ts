@@ -77,4 +77,26 @@ export const logNames = {
       failed: "Failed to get route",
     },
   },
+  db: {
+    pool: {
+      error: "Postgres pool error",
+    },
+  },
+  gtfs: {
+    noActiveFeed: "No active GTFS feed in the database",
+    feedExpiring: "Active GTFS feed is within 2 days of its validity end date",
+    unmappedStation: "GTFS rail stop has no station mapping",
+    search: {
+      failed: "Failed to run GTFS timetable search",
+    },
+    ingest: {
+      start: "Started GTFS ingest",
+      unchanged: "GTFS feed unchanged since last ingest (checksum match)",
+      loaded: "Loaded new GTFS feed",
+      swapped: "Activated new GTFS feed",
+      failed: "GTFS ingest failed",
+      mappingDrift: "Station mapping drifted from the committed baseline",
+      mappingIncomplete: "Station mapping is incomplete; keeping previous feed",
+    },
+  },
 }
