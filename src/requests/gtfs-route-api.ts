@@ -286,12 +286,19 @@ const buildTrain = (allTrips: DayTrips, leg: Leg): Train => {
   const board = trip.stops[leg.boardIndex]
   const alight = trip.stops[leg.alightIndex]
 
+  // Israel Railways lists arrival_time as the passenger-facing time at every
+  // station — the train then dwells until departure_time (e.g. Hadera West arr
+  // 09:10 / dep 09:12, and the legacy API/boards show 09:10). The exception is
+  // Tel Aviv Savidor Center (the central hub): its dwell is long enough that the
+  // meaningful time is when the train leaves, so show departure_time there.
+  const displayTs = (s: StopNode): number => (s.railId === SAVIDOR_STATION ? s.depTs : s.arrTs)
+
   // routeStations = the train's full run (the app indexes origin/dest into this).
-  // Unlike the other times, the legacy API gives routeStations.arrivalTime as a
-  // bare "HH:mm" string, which the clients render verbatim — so match that.
+  // The legacy API gives routeStations.arrivalTime as a bare "HH:mm" string, which
+  // the clients render verbatim — so match that.
   const routeStations: RouteStation[] = trip.stops.map((s) => ({
     stationId: s.railId,
-    arrivalTime: localIsoFromTs(s.arrTs).slice(11, 16),
+    arrivalTime: localIsoFromTs(displayTs(s)).slice(11, 16),
     crowded: 0,
     platform: s.platform,
   }))
@@ -299,8 +306,8 @@ const buildTrain = (allTrips: DayTrips, leg: Leg): Train => {
   // stopStations = stops strictly between board and alight.
   const stopStations: StopStation[] = trip.stops.slice(leg.boardIndex + 1, leg.alightIndex).map((s) => ({
     stationId: s.railId,
-    arrivalTime: localIsoFromTs(s.arrTs),
-    departureTime: localIsoFromTs(s.depTs),
+    arrivalTime: localIsoFromTs(displayTs(s)),
+    departureTime: localIsoFromTs(displayTs(s)),
     platform: s.platform,
     crowded: 0,
   }))
@@ -312,8 +319,8 @@ const buildTrain = (allTrips: DayTrips, leg: Leg): Train => {
     originPlatform: board.platform,
     destPlatform: alight.platform,
     freeSeats: 0,
-    departureTime: localIsoFromTs(board.depTs),
-    arrivalTime: localIsoFromTs(alight.arrTs),
+    departureTime: localIsoFromTs(displayTs(board)),
+    arrivalTime: localIsoFromTs(displayTs(alight)),
     stopStations,
     handicap: 0,
     crowded: 0,

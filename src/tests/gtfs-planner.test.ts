@@ -37,6 +37,40 @@ describe("planTravels", () => {
     expect(travels[0].trains[0].trainPosition.calcDiffMinutes).toBe(0)
   })
 
+  it("shows the boarding station's arrival_time as the departure (Israel Railways platform dwell)", () => {
+    // Hadera West: the train arrives 09:10, dwells, departs 09:12. The legacy
+    // rail.co.il API surfaced 09:10 (the platform/arrival time), so we must too.
+    const dwellTrip: TripData = {
+      tripKey: `${DATE}#dwell`,
+      trainNumber: 500,
+      stops: [
+        { railId: 3100, platform: 1, arrTs: ts("09:10"), depTs: ts("09:12") },
+        { railId: 2800, platform: 2, arrTs: ts("09:23"), depTs: ts("09:23") },
+      ],
+    }
+    const travels = planTravels(table(dwellTrip), 3100, 2800, ts("07:00"))
+    expect(travels).toHaveLength(1)
+    expect(travels[0].trains[0].departureTime).toBe("2026-06-27T09:10:00") // arrival_time, not 09:12
+    expect(travels[0].trains[0].arrivalTime).toBe("2026-06-27T09:23:00")
+    expect(travels[0].trains[0].routeStations[0].arrivalTime).toBe("09:10")
+  })
+
+  it("uses departure_time at Savidor (long-dwell hub) but arrival_time elsewhere", () => {
+    // Savidor: arrives 08:00, dwells, departs 08:04. Hadera West (non-Savidor) keeps arrival_time.
+    const savidorTrip: TripData = {
+      tripKey: `${DATE}#sav`,
+      trainNumber: 600,
+      stops: [
+        { railId: 3700, platform: 3, arrTs: ts("08:00"), depTs: ts("08:04") }, // Savidor origin
+        { railId: 3100, platform: 1, arrTs: ts("08:40"), depTs: ts("08:42") }, // Hadera West dest
+      ],
+    }
+    const travels = planTravels(table(savidorTrip), 3700, 3100, ts("07:00"))
+    expect(travels[0].trains[0].departureTime).toBe("2026-06-27T08:04:00") // Savidor -> departure_time
+    expect(travels[0].trains[0].arrivalTime).toBe("2026-06-27T08:40:00") // Hadera -> arrival_time
+    expect(travels[0].trains[0].routeStations[0].arrivalTime).toBe("08:04") // Savidor in route uses dep too
+  })
+
   it("excludes trains that already departed before the query time", () => {
     const trips = table(trip("a", 101, [[3700, "06:00", 1], [3400, "06:30", 1]]))
     const travels = planTravels(trips, 3700, 3400, ts("07:00"))
