@@ -82,7 +82,6 @@ mapping.
 - `NODE_ENV`: `production` or `test`, used to determine notifications scheduler logic
 - `PORT`: port express listens to
 - `REDIS_URL`: connection string for redis
-- `MONGO_URL`: connection string for mongodb
 - `DATABASE_URL`: connection string for Postgres (GTFS timetable store)
 - `RAIL_URL`: url of the rail api (used to proxy announcements / popups / station info, and at ingest to fetch platforms)
 - `RAIL_API_KEY`: api key for the rail api (server-side proxy + ingest platform fetch)
