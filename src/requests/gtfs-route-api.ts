@@ -277,9 +277,11 @@ const buildTrain = (allTrips: DayTrips, leg: Leg): Train => {
   const alight = trip.stops[leg.alightIndex]
 
   // routeStations = the train's full run (the app indexes origin/dest into this).
+  // Unlike the other times, the legacy API gives routeStations.arrivalTime as a
+  // bare "HH:mm" string, which the clients render verbatim — so match that.
   const routeStations: RouteStation[] = trip.stops.map((s) => ({
     stationId: s.railId,
-    arrivalTime: localIsoFromTs(s.arrTs),
+    arrivalTime: localIsoFromTs(s.arrTs).slice(11, 16),
     crowded: 0,
     platform: s.platform,
   }))

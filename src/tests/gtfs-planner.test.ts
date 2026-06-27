@@ -30,6 +30,8 @@ describe("planTravels", () => {
     expect(travels[0].trains[0].stopStations.map((s: { stationId: number }) => s.stationId)).toEqual([3500])
     // routeStations is the full physical run including endpoints
     expect(travels[0].trains[0].routeStations.map((s: { stationId: number }) => s.stationId)).toEqual([3700, 3500, 3400])
+    // routeStations.arrivalTime is a bare "HH:mm" string (like the legacy API), not full ISO
+    expect(travels[0].trains[0].routeStations.map((s: { arrivalTime: string }) => s.arrivalTime)).toEqual(["08:00", "08:20", "08:35"])
     expect(travels[0].trains[0].departureTime).toBe("2026-06-27T08:00:00")
     expect(travels[0].trains[0].destPlatform).toBe(1)
     expect(travels[0].trains[0].trainPosition.calcDiffMinutes).toBe(0)
