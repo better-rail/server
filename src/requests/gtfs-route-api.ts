@@ -65,13 +65,24 @@ const toPlatform = (platformCode: string | null): number => {
 
 // --- per-(feed, service date) trip cache ---------------------------------------
 
-const dayCache = new Map<string, DayTrips>()
+// Cache the in-flight Promise (not the resolved value) so concurrent requests for
+// the same (feed, day) collapse onto one DB query instead of stampeding the pool;
+// a rejected query is evicted so the next call retries.
+const dayCache = new Map<string, Promise<DayTrips>>()
+let lastFeedId: string | undefined
 
-const loadDayTrips = async (feedId: string, serviceDate: string): Promise<DayTrips> => {
+const loadDayTrips = (feedId: string, serviceDate: string): Promise<DayTrips> => {
   const cacheKey = `${feedId}#${serviceDate}`
   const cached = dayCache.get(cacheKey)
   if (cached) return cached
 
+  const promise = fetchDayTrips(feedId, serviceDate)
+  promise.catch(() => dayCache.delete(cacheKey)) // don't cache failures
+  dayCache.set(cacheKey, promise)
+  return promise
+}
+
+const fetchDayTrips = async (feedId: string, serviceDate: string): Promise<DayTrips> => {
   const { rows } = await query<{
     trip_id: string
     train_number: number
@@ -107,7 +118,6 @@ const loadDayTrips = async (feedId: string, serviceDate: string): Promise<DayTri
       depTs: toEpochMs(serviceDate, row.dep_offset_sec),
     })
   }
-  dayCache.set(cacheKey, trips)
   return trips
 }
 
@@ -442,6 +452,13 @@ export const searchTrain = async (
     logger?.error(logNames.gtfs.noActiveFeed)
     return { result: { travels: [] } }
   }
+
+  // A daily cron ingests a new feed and flips the active one; evict day caches from
+  // now-inactive feeds so they don't accumulate for the process lifetime.
+  if (lastFeedId !== undefined && lastFeedId !== feed.feedId) {
+    invalidateDayCacheForFeed(feed.feedId)
+  }
+  lastFeedId = feed.feedId
 
   // The client keeps sending the current time-of-day even when paging to a future
   // date; for any day other than today, show the whole day from midnight rather

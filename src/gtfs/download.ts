@@ -7,30 +7,22 @@
  * is a reduced/legacy export and should NOT be used.
  */
 import fs from "fs"
-import https from "https"
 import unzipper from "unzipper"
 
 export const GTFS_MAIN_URL = "https://gtfs.mot.gov.il/gtfsfiles/Gtfs_10_days.zip"
 
 export async function downloadFeed(zipPath: string, url: string = GTFS_MAIN_URL): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const file = fs.createWriteStream(zipPath)
-    const request = https.get(url, { headers: { "User-Agent": "better-rail-server/1.0" }, timeout: 120_000 }, (res) => {
-      if (res.statusCode !== 200) {
-        res.resume()
-        file.close()
-        reject(new Error(`Download failed: HTTP ${res.statusCode} for ${url}`))
-        return
-      }
-      res.pipe(file)
-      file.on("finish", () => file.close(() => resolve()))
-    })
-    request.on("error", (error) => {
-      file.close()
-      reject(error)
-    })
-    request.on("timeout", () => request.destroy(new Error("Download timed out")))
+  // Use fetch (not Node's https.get) so 3xx redirects are followed automatically —
+  // gov/CDN portals often issue them. The feed is a few tens of MB downloaded once
+  // a day, so buffering it before the single write is fine.
+  const res = await fetch(url, {
+    headers: { "User-Agent": "better-rail-server/1.0" },
+    signal: AbortSignal.timeout(120_000),
   })
+  if (!res.ok) {
+    throw new Error(`Download failed: HTTP ${res.status} for ${url}`)
+  }
+  await fs.promises.writeFile(zipPath, Buffer.from(await res.arrayBuffer()))
 }
 
 export async function extractFeed(zipPath: string, destDir: string): Promise<void> {

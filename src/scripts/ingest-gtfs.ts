@@ -274,6 +274,17 @@ const main = async () => {
   await applySchema()
 
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "gtfs-"))
+  try {
+    await ingest(workDir)
+  } finally {
+    // Always clean up the temp dir, even if the ingest threw (download/parse/DB
+    // error, unmapped station) — otherwise extracted feeds pile up in /tmp.
+    fs.rmSync(workDir, { recursive: true, force: true })
+    log("done")
+  }
+}
+
+const ingest = async (workDir: string) => {
   let gtfsDir = argGtfsDir()
   let checksum: string
 
@@ -317,10 +328,6 @@ const main = async () => {
 
   await pruneOldFeeds()
   warnIfExpiring(feed.feedInfo.feedEndDate)
-
-  // Best-effort cleanup of the temp dir.
-  fs.rmSync(workDir, { recursive: true, force: true })
-  log("done")
 }
 
 main()
