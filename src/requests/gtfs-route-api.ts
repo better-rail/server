@@ -33,9 +33,11 @@ const MAX_CONNECTION_MS = 45 * 60 * 1000 // longest allowed transfer wait (no lo
 const PREFER_FEWER_CHANGES_WINDOW_MS = 20 * 60 * 1000
 const MAX_ONWARD_ROUNDS = 2 // first train + 2 onward trips => up to 2 transfers
 // The client renders a whole day at once (no intra-day paging), so return the
-// full day rather than just the next handful of departures.
-const MAX_RESULTS = 120
-const MAX_FIRST_TRAINS_SCANNED = 300
+// full day (midnight to midnight) rather than just the next handful of departures.
+// These are safety valves only and must sit above any real single-day volume:
+// the busiest station (Tel Aviv Savidor) sees ~420 boardable trains per day.
+const MAX_RESULTS = 500
+const MAX_FIRST_TRAINS_SCANNED = 1000
 
 // Transfer-station preference (same trains & arrival, but a nicer place to change).
 const TLV_STATIONS = new Set([3700, 4600, 4900, 3600]) // Savidor, HaShalom, HaHagana, University
