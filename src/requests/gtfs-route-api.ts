@@ -467,7 +467,7 @@ export const searchTrain = async (
   fromStation: number,
   toStation: number,
   date: string,
-  hour: string,
+  _hour: string,
   _scheduleType: ScheduleType = "ByDeparture",
 ): Promise<RailApiGetRoutesResult> => {
   const feed = await getActiveFeed()
@@ -483,11 +483,10 @@ export const searchTrain = async (
   }
   lastFeedId = feed.feedId
 
-  // The client keeps sending the current time-of-day even when paging to a future
-  // date; for any day other than today, show the whole day from midnight rather
-  // than from "now". "Today" is the current Israel calendar date (rail is local).
-  const todayIsrael = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(new Date())
-  const effectiveHour = date > todayIsrael ? "00:00" : hour || "00:00"
+  // Like the legacy Rail API, return the requested day's full timetable from
+  // midnight — even for today — ignoring the client's time-of-day. The client
+  // renders the whole day and scrolls to the relevant departure itself.
+  const effectiveHour = "00:00"
 
   // Merge the relevant service days into one trip table.
   const serviceDates = railServiceDatesForQuery(date, effectiveHour)
