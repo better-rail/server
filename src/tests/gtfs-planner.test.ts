@@ -208,6 +208,37 @@ describe("planTravels", () => {
     expect(travels[0].trains.map((t: { trainNumber: number }) => t.trainNumber)).toEqual([301])
   })
 
+  describe("realtime (SIRI) injection", () => {
+    const trips = () =>
+      table(
+        trip("a", 101, [[3700, "08:00", 1], [3500, "08:20", 2], [3400, "08:35", 1]]),
+        trip("b", 102, [[3700, "09:00", 3], [3400, "09:30", 1]]),
+      )
+
+    it("fills calcDiffMinutes and overrides platforms from the lookup", () => {
+      const lookup = (serviceDate: string, trainNumber: number, railId: number) => {
+        expect(serviceDate).toBe(DATE)
+        if (trainNumber !== 101) return { delayMin: 0 }
+        return { delayMin: 7, platform: railId === 3500 ? 9 : undefined }
+      }
+      const travels = planTravels(trips(), 3700, 3400, ts("07:00"), Infinity, lookup)
+
+      const [delayed, onTime] = travels.map((t) => t.trains[0])
+      expect(delayed.trainPosition.calcDiffMinutes).toBe(7)
+      expect(delayed.stopStations[0].platform).toBe(9) // live platform at 3500
+      expect(delayed.routeStations.map((s: { platform: number }) => s.platform)).toEqual([1, 9, 1])
+      expect(delayed.originPlatform).toBe(1) // no override -> scheduled platform
+      expect(onTime.trainPosition.calcDiffMinutes).toBe(0)
+      expect(onTime.originPlatform).toBe(3)
+    })
+
+    it("keeps schedule-only output without a lookup (default)", () => {
+      const travels = planTravels(trips(), 3700, 3400, ts("07:00"))
+      expect(travels[0].trains[0].trainPosition.calcDiffMinutes).toBe(0)
+      expect(travels[0].trains[0].stopStations[0].platform).toBe(2)
+    })
+  })
+
   describe("transfer-station preference (same trains & arrival)", () => {
     const changeStation = (travels: any) => travels[0].trains[0].destinationStation
 

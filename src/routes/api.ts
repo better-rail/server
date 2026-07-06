@@ -4,6 +4,7 @@ import { buildRide } from "../utils/ride-utils"
 import { RideRequestSchema } from "../types/ride"
 import { createRateLimiter } from "../utils/rate-limiter"
 import { railProxy, handleSearchTrainRequest } from "./proxy"
+import { siriDebugRouter } from "./siri-debug"
 import { DeleteRideBody, UpdateRideTokenBody, bodyValidator } from "./validations"
 import { endRideNotifications, startRideNotifications, updateRideToken } from "../rides"
 
@@ -31,6 +32,8 @@ rideRouter.delete("/", bodyValidator(DeleteRideBody), async (req, res) => {
 })
 
 router.use("/ride", rideRouter)
+// SIRI pipeline debugging (404s without SIRI_DEBUG_TOKEN — see routes/siri-debug.ts)
+router.use("/siri", siriDebugRouter)
 // Handle the specific search train request with transformation
 router.get(
   "/rail-api/rjpa/api/v1/timetable/searchTrainLuzForDateTime",

@@ -17,3 +17,17 @@ export const appleKeyId = process.env.APPLE_KEY_ID as string
 export const appleKeyContent = (process.env.APPLE_KEY_CONTENT as string)?.replace(/\\n/g, "\n")
 export const appleApnHost = process.env.APN_ENV === "production" ? Host.production : Host.development
 export const firebaseAdminAuth = JSON.parse(process.env.FIREBASE_ADMIN_AUTH || "{}")
+
+// SIRI-SM real-time feed (MOT). The API is IP-allow-listed, so only the deployed
+// poller can reach it; when SIRI_URL / SIRI_KEY are unset everything degrades to
+// schedule-only results (delay 0, scheduled platforms).
+export const siriUrl = process.env.SIRI_URL as string
+export const siriKey = process.env.SIRI_KEY as string
+export const siriDebugToken = process.env.SIRI_DEBUG_TOKEN as string
+export const siriPollSeconds = Number(process.env.SIRI_POLL_SECONDS) || 30
+export const siriPreviewInterval = process.env.SIRI_PREVIEW_INTERVAL || "PT90M"
+export const siriChunkSize = Number(process.env.SIRI_CHUNK_SIZE) || 70
+export const siriStaleSeconds = Number(process.env.SIRI_STALE_SECONDS) || 600
+// "in-process" runs the poller inside the web service (fallback when the
+// MOT-registered egress IP belongs to it); default is the standalone `bun run siri`.
+export const siriPollerMode = process.env.SIRI_POLLER_MODE

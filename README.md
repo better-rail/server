@@ -21,9 +21,10 @@ To follow these steps, ensure that [Bun](https://bun.sh) is installed (the serve
 - `/gtfs`: GTFS feed download, parsing (rail subset) and station matching
 - `/locales`: language files for notifications
 - `/logs`: logger and lognames sit here
-- `/requests`: timetable engine (`gtfs-route-api.ts`), SIRI placeholder and the rides route fetcher
+- `/requests`: timetable engine (`gtfs-route-api.ts`) and the rides route fetcher
 - `/rides`: notification scheduler
-- `/routes`: express router (incl. the `/rail-api` proxy that serves GTFS timetable + proxies the rest)
+- `/routes`: express router (incl. the `/rail-api` proxy that serves GTFS timetable + proxies the rest, and the token-guarded `/siri` debug routes)
+- `/siri`: SIRI-SM real-time pipeline — poller (standalone entrypoint `main.ts`), correlation and the redis snapshot
 - `/scripts`: standalone CLIs — `download-feed`, `ingest-gtfs`, `build-station-mapping`, `verify-mapping`
 - `/tests`: all the tests are here
 - `/types`: all the types are here
@@ -39,8 +40,7 @@ The train timetable comes from the **Israel MOT GTFS** static feed
 journey planner over the GTFS schedule, so every client (app + native widgets)
 only needed a base-URL change. Announcements, popup messages and station info are
 **not** migrated — they keep proxying upstream to the Israel Railways API through
-the same `/rail-api` route. Real-time delays (SIRI-SM) are not connected yet, so
-`trainPosition.calcDiffMinutes` is always `0` (see `requests/siri.ts`).
+the same `/rail-api` route.
 
 **Platforms:** GTFS has no train→platform link (rail `stop_times` reference
 station-level stops with an empty `platform_code`). The scheduled platforms come
@@ -76,6 +76,23 @@ active feed atomically, so the live API never reads a half-loaded feed. It abort
 (keeping the previous feed) if a station that trips actually traverse has no
 mapping.
 
+### Real-time data: SIRI-SM
+
+Live delays (`trainPosition.calcDiffMinutes`) and platform changes come from the
+MOT **SIRI-SM v2.8** Stop Monitoring API. Access is IP-allow-listed, so the
+poller runs as its **own Railway service** (`bun run siri`) whose egress IP is
+registered with MOT — local machines cannot call the API at all. The poller
+requests all rail-station stop codes every ~30s, correlates each journey to a
+GTFS trip (LineRef + service date + origin departure time, with a stop-code
+fallback), and publishes a snapshot to redis (`siri:snapshot`). The web service
+reads that snapshot inside `searchTrain` — any failure (poller down, stale
+snapshot, no redis) degrades to schedule-only results.
+
+Remote debugging goes through token-guarded routes (404 without
+`SIRI_DEBUG_TOKEN` + an `x-debug-token` header): `GET /api/v1/siri/status`
+(poller health + match rates), `GET /api/v1/siri/raw` (last raw payloads — the
+test-fixture source) and `GET /api/v1/siri/unmatched` (correlation misses).
+
 ### Enviroment Variables
 
 - `TZ`: should always be "Asia/Jerusalem"
@@ -92,3 +109,8 @@ mapping.
 - `APPLE_KEY_CONTENT`: apple notifications key content, replace new lines with `\n`
 - `APN_ENV`: apple notifications server enviroment, can be `production` or `test`
 - `FIREBASE_ADMIN_AUTH`: service account json for firebase project
+- `SIRI_URL`: MOT SIRI-SM base url incl. version (e.g. `https://moran.mot.gov.il/Channels/HTTPChannel/SmQuery/2.8`)
+- `SIRI_KEY`: MOT-issued SIRI access key (works only from the allow-listed egress IP)
+- `SIRI_DEBUG_TOKEN`: secret for the `/api/v1/siri/*` debug routes; unset = routes 404
+- `SIRI_POLLER_MODE`: set to `in-process` to run the poller inside the web service instead of the standalone `bun run siri` service
+- `SIRI_POLL_SECONDS` / `SIRI_PREVIEW_INTERVAL` / `SIRI_CHUNK_SIZE` / `SIRI_STALE_SECONDS`: optional tuning (defaults 30 / PT90M / 70 / 600)

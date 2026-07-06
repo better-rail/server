@@ -42,6 +42,7 @@
   "scripts": {
     "dev": "bun --watch ./src/index.ts",
     "start": "bun ./src/index.ts",
+    "siri": "bun ./src/siri/main.ts",
     "test": "bun test",
     "download": "bun ./src/scripts/download-feed.ts",
     "ingest": "bun ./src/scripts/ingest-gtfs.ts",

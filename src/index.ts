@@ -2,11 +2,12 @@ import express from "express"
 
 import { router } from "./routes/api"
 import { applySchema, getActiveFeed } from "./db"
-import { env, port } from "./data/config"
+import { env, port, siriPollerMode } from "./data/config"
 import { connectToRedis } from "./data/redis"
 import { connectToApn } from "./utils/apn-utils"
 import { connectToFcm } from "./utils/fcm-utils"
 import { logNames, logger, startLogger } from "./logs"
+import { startSiriPoller } from "./siri/poller"
 import { scheduleExistingRides } from "./utils/ride-utils"
 
 const app = express()
@@ -34,5 +35,10 @@ app.listen(port, async () => {
   }
 
   scheduleExistingRides()
+
+  // The SIRI poller normally runs as its own Railway service (`bun run siri`);
+  // this fallback hosts it here when the MOT-registered egress IP is ours.
+  if (siriPollerMode === "in-process") startSiriPoller()
+
   logger.info(logNames.server.listening, { port, env })
 })

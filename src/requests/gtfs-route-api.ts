@@ -12,11 +12,15 @@
  * earliest-arrival onward journey of at most two transfers. The network is tiny
  * (~70 stations), so a day's trips are cached in-process and scanned directly.
  *
- * Delays are stubbed to 0 (trainPosition.calcDiffMinutes) until SIRI is wired in
- * (see requests/siri.ts) — clients already treat a missing delay as on-time.
+ * Real-time data (delays into trainPosition.calcDiffMinutes, live platform
+ * overrides) comes from the SIRI-SM snapshot the poller publishes to redis
+ * (see src/siri/) — when no fresh snapshot exists the response is pure schedule
+ * (delay 0), which clients already treat as on-time.
  */
 import { getActiveFeed, query } from "../db"
 import { logNames, logger } from "../logs"
+import { getRealtimeSnapshot, makeRealtimeLookup, zeroRealtimeLookup } from "../siri/snapshot"
+import type { RealtimeLookup } from "../siri/types"
 import { RailApiGetRoutesResult, Train, StopStation, RouteStation } from "../types/rail-response"
 import { addDays, parseOffsetSec, railServiceDatesForQuery, toEpochMs } from "../utils/gtfs-time"
 
@@ -50,6 +54,9 @@ export type StopNode = {
 export type TripData = {
   tripKey: string
   trainNumber: number
+  // Optional so schedule-only fixtures (tests) can omit it; always set when
+  // loaded from the DB. The SIRI correlation index matches on it (= LineRef).
+  routeId?: string
   stops: StopNode[] // ordered by stop_sequence; only mapped (non-null rail_id) stops
 }
 
@@ -86,13 +93,14 @@ const fetchDayTrips = async (feedId: string, serviceDate: string): Promise<DayTr
   const { rows } = await query<{
     trip_id: string
     train_number: number
+    route_id: string
     stop_sequence: number
     rail_id: number | null
     platform_code: string | null
     arr_offset_sec: number
     dep_offset_sec: number
   }>(
-    `SELECT st.trip_id, t.train_number, st.stop_sequence, st.rail_id, st.platform_code,
+    `SELECT st.trip_id, t.train_number, t.route_id, st.stop_sequence, st.rail_id, st.platform_code,
             st.arr_offset_sec, st.dep_offset_sec
        FROM calendar_dates cd
        JOIN trips t       ON t.feed_id = cd.feed_id AND t.service_id = cd.service_id
@@ -108,7 +116,7 @@ const fetchDayTrips = async (feedId: string, serviceDate: string): Promise<DayTr
     const tripKey = `${serviceDate}#${row.trip_id}`
     let trip = trips.get(tripKey)
     if (!trip) {
-      trip = { tripKey, trainNumber: row.train_number, stops: [] }
+      trip = { tripKey, trainNumber: row.train_number, routeId: row.route_id, stops: [] }
       trips.set(tripKey, trip)
     }
     trip.stops.push({
@@ -281,10 +289,17 @@ const maxConnectionWaitMs = (allTrips: DayTrips, legs: Leg[]): number => {
   return max
 }
 
-const buildTrain = (allTrips: DayTrips, leg: Leg): Train => {
+const buildTrain = (allTrips: DayTrips, leg: Leg, realtime: RealtimeLookup): Train => {
   const trip = allTrips.get(leg.tripKey)!
   const board = trip.stops[leg.boardIndex]
   const alight = trip.stops[leg.alightIndex]
+
+  // Live data (delay + platform changes) from the SIRI snapshot. Delay is the
+  // boarding station's when known, else the train's latest — always vs the
+  // *scheduled* time, so it composes with the displayed times below.
+  const serviceDate = trip.tripKey.slice(0, trip.tripKey.indexOf("#"))
+  const rt = (railId: number) => realtime(serviceDate, trip.trainNumber, railId)
+  const livePlatform = (s: StopNode): number => rt(s.railId).platform ?? s.platform
 
   // Israel Railways lists arrival_time as the passenger-facing time at every
   // station — the train then dwells until departure_time (e.g. Hadera West arr
@@ -300,7 +315,7 @@ const buildTrain = (allTrips: DayTrips, leg: Leg): Train => {
     stationId: s.railId,
     arrivalTime: localIsoFromTs(displayTs(s)).slice(11, 16),
     crowded: 0,
-    platform: s.platform,
+    platform: livePlatform(s),
   }))
 
   // stopStations = stops strictly between board and alight.
@@ -308,7 +323,7 @@ const buildTrain = (allTrips: DayTrips, leg: Leg): Train => {
     stationId: s.railId,
     arrivalTime: localIsoFromTs(displayTs(s)),
     departureTime: localIsoFromTs(displayTs(s)),
-    platform: s.platform,
+    platform: livePlatform(s),
     crowded: 0,
   }))
 
@@ -316,15 +331,15 @@ const buildTrain = (allTrips: DayTrips, leg: Leg): Train => {
     trainNumber: trip.trainNumber,
     orignStation: board.railId,
     destinationStation: alight.railId,
-    originPlatform: board.platform,
-    destPlatform: alight.platform,
+    originPlatform: livePlatform(board),
+    destPlatform: livePlatform(alight),
     freeSeats: 0,
     departureTime: localIsoFromTs(displayTs(board)),
     arrivalTime: localIsoFromTs(displayTs(alight)),
     stopStations,
     handicap: 0,
     crowded: 0,
-    trainPosition: { calcDiffMinutes: 0 },
+    trainPosition: { calcDiffMinutes: rt(board.railId).delayMin },
     routeStations,
   }
 }
@@ -343,6 +358,7 @@ export const planTravels = (
   toStation: number,
   queryTs: number,
   endTs: number = Infinity,
+  realtime: RealtimeLookup = zeroRealtimeLookup,
 ): RailApiGetRoutesResult["result"]["travels"] => {
   // Candidate first trains: those boardable at the origin within [queryTs, endTs).
   // endTs bounds the response to the requested day so it doesn't bleed into the
@@ -393,7 +409,7 @@ export const planTravels = (
     seen.add(key)
 
     if (legs.length > 1) optimizeTransfers(allTrips, legs, effectiveMin)
-    const trains = legs.map((leg) => buildTrain(allTrips, leg))
+    const trains = legs.map((leg) => buildTrain(allTrips, leg, realtime))
     const lastLeg = legs[legs.length - 1]
     candidates.push({
       travel: {
@@ -483,9 +499,14 @@ export const searchTrain = async (
 
   const queryTs = toEpochMs(date, parseOffsetSec(effectiveHour))
   const endTs = toEpochMs(addDays(date, 1), 0) // bound results to the requested day
-  // Platforms are baked into stop_times.platform_code at ingest, so the response
-  // already carries them (loadDayTrips reads them) — no per-request API call.
-  return { result: { travels: planTravels(allTrips, fromStation, toStation, queryTs, endTs) } }
+
+  // Live delays/platforms from the SIRI poller's snapshot in redis. Never
+  // rejects; missing/stale snapshots degrade to schedule-only results.
+  const realtime = makeRealtimeLookup(await getRealtimeSnapshot())
+
+  // Scheduled platforms are baked into stop_times.platform_code at ingest, so the
+  // response already carries them (loadDayTrips reads them) — no per-request API call.
+  return { result: { travels: planTravels(allTrips, fromStation, toStation, queryTs, endTs, realtime) } }
 }
 
-export { invalidateDayCacheForFeed }
+export { invalidateDayCacheForFeed, loadDayTrips }
