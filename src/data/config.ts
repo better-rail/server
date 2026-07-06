@@ -23,6 +23,12 @@ export const firebaseAdminAuth = JSON.parse(process.env.FIREBASE_ADMIN_AUTH || "
 // schedule-only results (delay 0, scheduled platforms).
 export const siriUrl = process.env.SIRI_URL as string
 export const siriKey = process.env.SIRI_KEY as string
+// moran.mot.gov.il serves an incomplete TLS chain ("unable to verify the first
+// certificate"). Preferred fix: paste the missing intermediate(+root) PEM into
+// SIRI_CA_PEM (\n-escaped, like APPLE_KEY_CONTENT). Quick unblock:
+// SIRI_TLS_INSECURE=true skips verification for SIRI requests only.
+export const siriCaPem = (process.env.SIRI_CA_PEM as string)?.replace(/\\n/g, "\n")
+export const siriTlsInsecure = process.env.SIRI_TLS_INSECURE === "true"
 export const siriDebugToken = process.env.SIRI_DEBUG_TOKEN as string
 export const siriPollSeconds = Number(process.env.SIRI_POLL_SECONDS) || 30
 export const siriPreviewInterval = process.env.SIRI_PREVIEW_INTERVAL || "PT90M"

@@ -10,10 +10,20 @@
  * The access key must never reach logs — redactKey() is applied to every error
  * path that could embed the request URL.
  */
-import { siriKey, siriPreviewInterval, siriUrl } from "../data/config"
+import { siriCaPem, siriKey, siriPreviewInterval, siriTlsInsecure, siriUrl } from "../data/config"
 import { NormalizedVisit } from "./types"
 
 const REQUEST_TIMEOUT_MS = 15_000
+
+// moran.mot.gov.il's chain is missing its intermediate cert, so default
+// verification fails. Bun's fetch takes per-request TLS options: trust the
+// operator-provided chain (SIRI_CA_PEM) or, as a last resort, skip
+// verification for SIRI requests only (SIRI_TLS_INSECURE) — never globally.
+const tlsOptions = (): Record<string, unknown> | undefined => {
+  if (siriCaPem) return { ca: siriCaPem }
+  if (siriTlsInsecure) return { rejectUnauthorized: false }
+  return undefined
+}
 
 type UrlOptions = { url?: string; key?: string; preview?: string }
 
@@ -97,7 +107,7 @@ export const fetchStopMonitoring = async (
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
   try {
-    const res = await fetch(url, { signal: controller.signal })
+    const res = await fetch(url, { signal: controller.signal, tls: tlsOptions() } as RequestInit)
     const rawBody = await res.text()
     if (!res.ok) {
       throw new Error(`SIRI responded ${res.status}: ${rawBody.slice(0, 300)}`)

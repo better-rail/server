@@ -111,6 +111,8 @@ test-fixture source) and `GET /api/v1/siri/unmatched` (correlation misses).
 - `FIREBASE_ADMIN_AUTH`: service account json for firebase project
 - `SIRI_URL`: MOT SIRI-SM base url incl. version (e.g. `https://moran.mot.gov.il/Channels/HTTPChannel/SmQuery/2.8`)
 - `SIRI_KEY`: MOT-issued SIRI access key (works only from the allow-listed egress IP)
+- `SIRI_CA_PEM`: PEM chain (intermediate + root, `\n`-escaped) to trust for SIRI requests — moran.mot.gov.il serves an incomplete chain
+- `SIRI_TLS_INSECURE`: `true` skips TLS verification for SIRI requests only (fallback until `SIRI_CA_PEM` is captured)
 - `SIRI_DEBUG_TOKEN`: secret for the `/api/v1/siri/*` debug routes; unset = routes 404
 - `SIRI_POLLER_MODE`: set to `in-process` to run the poller inside the web service instead of the standalone `bun run siri` service
 - `SIRI_POLL_SECONDS` / `SIRI_PREVIEW_INTERVAL` / `SIRI_CHUNK_SIZE` / `SIRI_STALE_SECONDS`: optional tuning (defaults 30 / PT90M / 70 / 600)
