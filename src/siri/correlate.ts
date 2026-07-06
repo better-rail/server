@@ -1,12 +1,16 @@
 /**
  * correlate.ts — resolve a SIRI journey to a GTFS trip (and thus a train number).
  *
- * GTFS's TripIdToDate.txt was removed in Sept 2025, so SIRI's
- * DatedVehicleJourneyRef cannot be resolved to a trip_id. Instead we match on
- * schedule identity: LineRef (= route_id) + service date (DataFrameRef) +
- * OriginAimedDepartureTime, with a stop-code fallback (OriginRef + departure
- * time, DestinationRef as tiebreaker) that survives route renumbering between
- * MOT's nightly licensing DB and our possibly day-old feed.
+ * Correlation paths, in order (verified against production SIRI data 2026-07):
+ * 1. Train number — for rail, DatedVehicleJourneyRef and PublishedLineName both
+ *    carry the Israel Railways train number (= trips.train_number, from GTFS
+ *    trip_headsign), guarded by a ±3h departure-time sanity window so the same
+ *    train number on an adjacent service day can't match.
+ * 2. LineRef (= route_id) + service date + OriginAimedDepartureTime — per the
+ *    SIRI spec, but NOTE: in practice MOT's SIRI LineRef for rail is a
+ *    different id space than the Gtfs_10_days route_id, so this rarely hits.
+ * 3. OriginRef stop code + departure time (DestinationRef tiebreak) — rail
+ *    visits omit OriginRef in practice, so this is a last resort.
  *
  * Times: SIRI returns real ISO timestamps with a +02/+03 offset; the planner
  * works in "naive wall-clock epochs" (the local clock reading anchored at UTC
@@ -32,14 +36,16 @@ export type TripRef = {
 
 export type CorrelationIndex = {
   serviceDate: string
-  /** `${routeId}#${depMinute}` -> trips (arrays so ambiguity is detectable). */
+  /** IR train number -> trips (arrays so ambiguity is detectable). */
+  byTrainNumber: Map<number, TripRef[]>
+  /** `${routeId}#${depMinute}` -> trips. */
   byRouteDep: Map<string, TripRef[]>
   /** `${originRailId}#${depMinute}` -> trips. */
   byOriginDep: Map<string, TripRef[]>
 }
 
 export type MatchResult =
-  | { ok: true; tripRef: TripRef; path: "primary" | "fallback" }
+  | { ok: true; tripRef: TripRef; path: "train-number" | "primary" | "fallback" }
   | { ok: false; reason: "no-departure-time" | "no-service-date" | "ambiguous" | "no-match" }
 
 // --- time conversion ------------------------------------------------------------
@@ -89,7 +95,7 @@ const push = (map: Map<string, TripRef[]>, key: string, ref: TripRef) => {
 }
 
 export const buildCorrelationIndex = (serviceDate: string, dayTrips: DayTrips): CorrelationIndex => {
-  const index: CorrelationIndex = { serviceDate, byRouteDep: new Map(), byOriginDep: new Map() }
+  const index: CorrelationIndex = { serviceDate, byTrainNumber: new Map(), byRouteDep: new Map(), byOriginDep: new Map() }
 
   for (const trip of dayTrips.values()) {
     if (!trip.routeId || trip.stops.length === 0) continue
@@ -105,11 +111,24 @@ export const buildCorrelationIndex = (serviceDate: string, dayTrips: DayTrips): 
       arrByRailId: new Map(trip.stops.map((s) => [s.railId, s.arrTs])),
     }
     const depMinute = minuteOf(origin.depTs)
+    const byTrain = index.byTrainNumber.get(trip.trainNumber)
+    if (byTrain) byTrain.push(ref)
+    else index.byTrainNumber.set(trip.trainNumber, [ref])
     push(index.byRouteDep, `${trip.routeId}#${depMinute}`, ref)
     push(index.byOriginDep, `${origin.railId}#${depMinute}`, ref)
   }
 
   return index
+}
+
+// Rail visits put the train number in DatedVehicleJourneyRef (and mirror it in
+// PublishedLineName). Bus MOT trip ids are ~8 digits, so a short numeric value
+// is a train number and a long one is not.
+export const visitTrainNumber = (visit: NormalizedVisit): number | undefined => {
+  for (const value of [visit.datedVehicleJourneyRef, visit.publishedLineName]) {
+    if (value && /^\d{1,5}$/.test(value)) return Number(value)
+  }
+  return undefined
 }
 
 /** The service date a visit belongs to: DataFrameRef, else the departure's date. */
@@ -133,14 +152,20 @@ const probe = (map: Map<string, TripRef[]>, prefix: string, depMinute: number): 
   return []
 }
 
+// The same train number departs ~24h apart on adjacent service days; any
+// window well under that disambiguates the D±1 probes. Observed aimed
+// departures match the schedule to the minute, so 3h is generous.
+const TRAIN_NUMBER_DEP_WINDOW_MS = 3 * 60 * 60 * 1000
+
 export const matchJourney = (
   visit: NormalizedVisit,
   getIndex: (serviceDate: string) => CorrelationIndex | undefined,
   stopCodeToRailId: Map<string, number>,
 ): MatchResult => {
+  const trainNumber = visitTrainNumber(visit)
   const depNaive = visit.originAimedDeparture ? siriIsoToNaiveEpoch(visit.originAimedDeparture) : null
-  if (depNaive === null) return { ok: false, reason: "no-departure-time" }
-  const depMinute = minuteOf(depNaive)
+  if (depNaive === null && trainNumber === undefined) return { ok: false, reason: "no-departure-time" }
+  const depMinute = depNaive === null ? null : minuteOf(depNaive)
 
   const baseDate = visitServiceDate(visit)
   if (!baseDate) return { ok: false, reason: "no-service-date" }
@@ -153,6 +178,18 @@ export const matchJourney = (
   for (const date of dates) {
     const index = getIndex(date)
     if (!index) continue
+
+    if (trainNumber !== undefined) {
+      // Without a departure time to sanity-check against, only trust the
+      // reported service date — a D±1 hit could silently be the wrong day.
+      const hits = (index.byTrainNumber.get(trainNumber) ?? []).filter((t) =>
+        depNaive === null ? date === baseDate : Math.abs(depNaive - t.originDepTs) <= TRAIN_NUMBER_DEP_WINDOW_MS,
+      )
+      if (hits.length === 1) return { ok: true, tripRef: hits[0], path: "train-number" }
+      if (hits.length > 1) sawAmbiguous = true
+    }
+
+    if (depMinute === null) continue
 
     if (visit.lineRef) {
       const hits = probe(index.byRouteDep, `${visit.lineRef}#`, depMinute)

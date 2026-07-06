@@ -169,12 +169,14 @@ const runCycle = async () => {
   const matched: MatchedVisit[] = []
   const unmatched: UnmatchedSample[] = []
   const counters = {
+    matchedTrainNumber: 0,
     matchedPrimary: 0,
     matchedFallback: 0,
     unknownStopVisits: 0,
     cancelledVisits: 0,
     unmatchedByReason: {} as Record<string, number>,
   }
+  const counterByPath = { "train-number": "matchedTrainNumber", primary: "matchedPrimary", fallback: "matchedFallback" } as const
 
   for (const v of visits) {
     const railId = stopCodeToRailId.get(v.monitoringRef)
@@ -186,7 +188,7 @@ const runCycle = async () => {
 
     const result = matchJourney(v, getIndex, stopCodeToRailId)
     if (result.ok) {
-      counters[result.path === "primary" ? "matchedPrimary" : "matchedFallback"]++
+      counters[counterByPath[result.path]]++
       matched.push({
         tripRef: result.tripRef,
         railId,

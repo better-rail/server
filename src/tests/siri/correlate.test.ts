@@ -3,6 +3,7 @@ import {
   matchJourney,
   siriIsoToNaiveEpoch,
   visitServiceDate,
+  visitTrainNumber,
 } from "../../siri/correlate"
 import { DayTrips, TripData } from "../../requests/gtfs-route-api"
 import { NormalizedVisit } from "../../siri/types"
@@ -65,6 +66,15 @@ describe("visitServiceDate", () => {
   })
 })
 
+describe("visitTrainNumber", () => {
+  it("reads short numeric refs as train numbers, rejecting 8-digit MOT trip ids", () => {
+    expect(visitTrainNumber(visit({ datedVehicleJourneyRef: "751" }))).toBe(751)
+    expect(visitTrainNumber(visit({ datedVehicleJourneyRef: "20925867", publishedLineName: "751" }))).toBe(751)
+    expect(visitTrainNumber(visit({ datedVehicleJourneyRef: "20925867", publishedLineName: "561א" }))).toBeUndefined()
+    expect(visitTrainNumber(visit({}))).toBeUndefined()
+  })
+})
+
 describe("matchJourney", () => {
   const index = buildCorrelationIndex(
     DATE,
@@ -77,6 +87,49 @@ describe("matchJourney", () => {
     ),
   )
   const getIndex = (date: string) => (date === DATE ? index : undefined)
+
+  // The shape production rail visits actually have: LineRef from a foreign id
+  // space, no OriginRef, and the train number in DatedVehicleJourneyRef +
+  // PublishedLineName.
+  it("matches rail visits by train number despite a foreign LineRef and no OriginRef", () => {
+    const result = matchJourney(
+      visit({
+        lineRef: "30315",
+        originRef: undefined,
+        datedVehicleJourneyRef: "101",
+        publishedLineName: "101",
+        originAimedDeparture: "2026-07-06T08:00:00+03:00",
+      }),
+      getIndex,
+      stopCodes,
+    )
+    expect(result).toMatchObject({ ok: true, path: "train-number" })
+    expect((result as any).tripRef.trainNumber).toBe(101)
+  })
+
+  it("rejects a train-number hit whose departure is hours off (wrong-day guard)", () => {
+    const result = matchJourney(
+      visit({
+        lineRef: "30315",
+        originRef: undefined,
+        datedVehicleJourneyRef: "101",
+        originAimedDeparture: "2026-07-06T20:00:00+03:00",
+      }),
+      getIndex,
+      stopCodes,
+    )
+    expect(result).toEqual({ ok: false, reason: "no-match" })
+  })
+
+  it("matches by train number without a departure time, but only on the reported date", () => {
+    const base = { lineRef: undefined, originRef: undefined, originAimedDeparture: undefined, datedVehicleJourneyRef: "101" }
+    const onDate = matchJourney(visit(base), getIndex, stopCodes)
+    expect(onDate).toMatchObject({ ok: true, path: "train-number" })
+
+    // Reported date has no index and D±1 can't be trusted without a time check.
+    const wrongDate = matchJourney(visit({ ...base, dataFrameRef: "2026-07-07" }), getIndex, stopCodes)
+    expect(wrongDate).toEqual({ ok: false, reason: "no-match" })
+  })
 
   it("matches on LineRef + service date + origin departure (primary)", () => {
     const result = matchJourney(visit({}), getIndex, stopCodes)
