@@ -34,6 +34,8 @@ export type MatchedVisit = {
   expectedArrNaive: number | null
   status?: string
   platform?: number
+  /** The journey's live DestinationRef resolved to a rail_id, when it mapped. */
+  destRailId?: number
   location?: { lat: number; lon: number }
   vehicleRef?: string
 }
@@ -64,6 +66,10 @@ export const buildSnapshot = (matched: MatchedVisit[], feedId: string, nowNaiveM
     if (m.platform !== undefined) station.platform = m.platform
     train.stations[m.railId] = station
 
+    // A DestinationRef that maps to a known station but not the scheduled last
+    // stop means the run was curtailed/extended — surface the live last stop.
+    if (m.destRailId !== undefined && m.destRailId !== m.tripRef.destRailId) train.liveDestRailId = m.destRailId
+
     if (m.location) train.location = m.location
     if (m.vehicleRef) train.vehicleRef = m.vehicleRef
   }
@@ -82,6 +88,12 @@ export const buildSnapshot = (matched: MatchedVisit[], feedId: string, nowNaiveM
       }
     }
     train.latestDelayMin = (upcoming ?? past)?.delayMin ?? 0
+
+    // Whole-run cancellation: every monitored station reports cancelled. Require
+    // 2+ stations so a single skipped stop (or a lone visit at the preview-window
+    // edge) doesn't read as a full cancellation — per-station statuses carry those.
+    const stations = Object.values(train.stations)
+    if (stations.length >= 2 && stations.every((s) => s.status === "cancelled")) train.cancelled = true
   }
 
   return { updatedAt: Date.now(), feedId, trains }
@@ -155,6 +167,12 @@ export const makeRealtimeLookup = (snapshot: SiriSnapshot | null, nowMs = Date.n
     const station = train.stations[railId]
     const raw = station?.delayMin ?? train.latestDelayMin
     // IR trains don't run early; negative predictions are noise — clamp.
-    return { delayMin: Math.max(0, raw), platform: station?.platform }
+    return {
+      delayMin: Math.max(0, raw),
+      platform: station?.platform,
+      status: station?.status,
+      trainCancelled: train.cancelled,
+      liveDestRailId: train.liveDestRailId,
+    }
   }
 }

@@ -67,6 +67,37 @@ describe("buildSnapshot", () => {
     const snapshot = buildSnapshot([matched(ref, 3700, { expectedArrNaive: ts("07:58") })], "1", ts("07:00"))
     expect(snapshot.trains[`${DATE}#800`].stations[3700].delayMin).toBe(-2)
   })
+
+  it("marks the train cancelled only when 2+ monitored stations all report cancelled", () => {
+    const ref = tripRef(600, [[3700, "08:00"], [3500, "08:20"], [3100, "08:40"]])
+    const allCancelled = buildSnapshot(
+      [matched(ref, 3700, { status: "cancelled" }), matched(ref, 3100, { status: "cancelled" })],
+      "1",
+      ts("07:00"),
+    )
+    expect(allCancelled.trains[`${DATE}#600`].cancelled).toBe(true)
+
+    // One skipped stop among live ones is a stop cancellation, not a train cancellation.
+    const oneSkipped = buildSnapshot(
+      [matched(ref, 3700, { status: "cancelled" }), matched(ref, 3100, { status: "onTime" })],
+      "1",
+      ts("07:00"),
+    )
+    expect(oneSkipped.trains[`${DATE}#600`].cancelled).toBeUndefined()
+
+    // A single monitored station can't distinguish skip vs full cancellation.
+    const singleStation = buildSnapshot([matched(ref, 3700, { status: "cancelled" })], "1", ts("07:00"))
+    expect(singleStation.trains[`${DATE}#600`].cancelled).toBeUndefined()
+  })
+
+  it("keeps the live destination only when it differs from the scheduled one", () => {
+    const ref = tripRef(600, [[3700, "08:00"], [3100, "08:40"]])
+    const curtailed = buildSnapshot([matched(ref, 3700, { destRailId: 3500 })], "1", ts("07:00"))
+    expect(curtailed.trains[`${DATE}#600`].liveDestRailId).toBe(3500)
+
+    const asScheduled = buildSnapshot([matched(ref, 3700, { destRailId: 3100 })], "1", ts("07:00"))
+    expect(asScheduled.trains[`${DATE}#600`].liveDestRailId).toBeUndefined()
+  })
 })
 
 describe("makeRealtimeLookup", () => {
@@ -82,7 +113,22 @@ describe("makeRealtimeLookup", () => {
 
   it("returns the station's delay and live platform", () => {
     const lookup = makeRealtimeLookup(snapshot, snapshot.updatedAt)
-    expect(lookup(DATE, 600, 3700)).toEqual({ delayMin: 10, platform: 4 })
+    expect(lookup(DATE, 600, 3700)).toMatchObject({ delayMin: 10, platform: 4 })
+  })
+
+  it("passes station status and train-level cancellation/destination through", () => {
+    const cancelledSnapshot = buildSnapshot(
+      [
+        matched(ref, 3700, { status: "cancelled", destRailId: 3500 }),
+        matched(ref, 3100, { status: "cancelled" }),
+      ],
+      "1",
+      ts("07:00"),
+    )
+    const lookup = makeRealtimeLookup(cancelledSnapshot, cancelledSnapshot.updatedAt)
+    expect(lookup(DATE, 600, 3700)).toMatchObject({ status: "cancelled", trainCancelled: true, liveDestRailId: 3500 })
+    // Unmonitored station: no per-station status, train-level fields still present.
+    expect(lookup(DATE, 600, 3500)).toMatchObject({ status: undefined, trainCancelled: true, liveDestRailId: 3500 })
   })
 
   it("clamps negative delays to 0", () => {

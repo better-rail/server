@@ -237,6 +237,58 @@ describe("planTravels", () => {
       expect(travels[0].trains[0].trainPosition.calcDiffMinutes).toBe(0)
       expect(travels[0].trains[0].stopStations[0].platform).toBe(2)
     })
+
+    it("flags platform changes only when live and scheduled platforms are both known and differ", () => {
+      const lookup = (_d: string, trainNumber: number, railId: number) => {
+        if (trainNumber !== 101) return { delayMin: 0 }
+        // 3700: same as scheduled (1) -> no flag; 3500: 9 vs scheduled 2 -> flag.
+        return { delayMin: 0, platform: railId === 3700 ? 1 : railId === 3500 ? 9 : undefined }
+      }
+      const travels = planTravels(trips(), 3700, 3400, ts("07:00"), Infinity, lookup)
+
+      const train = travels[0].trains[0]
+      expect(train.originPlatformChanged).toBeUndefined() // live == scheduled
+      expect(train.destPlatformChanged).toBeUndefined() // no live platform at 3400
+      expect(train.stopStations[0].platformChanged).toBe(true) // 9 != 2 at 3500
+      expect(train.routeStations.map((s: { platformChanged?: boolean }) => s.platformChanged)).toEqual([
+        undefined,
+        true,
+        undefined,
+      ])
+    })
+
+    it("never flags a change against an unknown (0) scheduled platform", () => {
+      const trips0 = table(trip("a", 101, [[3700, "08:00", 0], [3400, "08:35", 1]]))
+      const lookup = () => ({ delayMin: 0, platform: 4 })
+      const travels = planTravels(trips0, 3700, 3400, ts("07:00"), Infinity, lookup)
+      expect(travels[0].trains[0].originPlatform).toBe(4) // live platform still shown
+      expect(travels[0].trains[0].originPlatformChanged).toBeUndefined()
+    })
+
+    it("marks skipped stops and passes train-level cancellation + live last stop", () => {
+      const lookup = (_d: string, trainNumber: number, railId: number) => {
+        if (trainNumber !== 101) return { delayMin: 0 }
+        return {
+          delayMin: 0,
+          status: railId === 3500 ? "cancelled" : "onTime",
+          trainCancelled: true,
+          liveDestRailId: 3500,
+        }
+      }
+      const travels = planTravels(trips(), 3700, 3400, ts("07:00"), Infinity, lookup)
+
+      const [cancelled, onTime] = travels.map((t) => t.trains[0])
+      expect(cancelled.isCancelled).toBe(true)
+      expect(cancelled.actualLastStationId).toBe(3500)
+      expect(cancelled.stopStations[0].cancelled).toBe(true)
+      expect(cancelled.routeStations.map((s: { cancelled?: boolean }) => s.cancelled)).toEqual([
+        undefined,
+        true,
+        undefined,
+      ])
+      expect(onTime.isCancelled).toBeUndefined()
+      expect(onTime.actualLastStationId).toBeUndefined()
+    })
   })
 
   describe("transfer-station preference (same trains & arrival)", () => {

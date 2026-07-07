@@ -302,6 +302,13 @@ const buildTrain = (allTrips: DayTrips, leg: Leg, realtime: RealtimeLookup): Tra
   const serviceDate = trip.tripKey.slice(0, trip.tripKey.indexOf("#"))
   const rt = (railId: number) => realtime(serviceDate, trip.trainNumber, railId)
   const livePlatform = (s: StopNode): number => rt(s.railId).platform ?? s.platform
+  // A platform "change" needs both sides known: the schedule can be 0 (the
+  // best-effort platform fetch missed it) and SIRI only covers monitored stops.
+  const platformChanged = (s: StopNode): true | undefined => {
+    const live = rt(s.railId).platform
+    return live !== undefined && s.platform > 0 && live !== s.platform ? true : undefined
+  }
+  const stopCancelled = (s: StopNode): true | undefined => (rt(s.railId).status === "cancelled" ? true : undefined)
 
   // Israel Railways lists arrival_time as the passenger-facing time at every
   // station — the train then dwells until departure_time (e.g. Hadera West arr
@@ -318,6 +325,8 @@ const buildTrain = (allTrips: DayTrips, leg: Leg, realtime: RealtimeLookup): Tra
     arrivalTime: localIsoFromTs(displayTs(s)).slice(11, 16),
     crowded: 0,
     platform: livePlatform(s),
+    platformChanged: platformChanged(s),
+    cancelled: stopCancelled(s),
   }))
 
   // stopStations = stops strictly between board and alight.
@@ -327,8 +336,11 @@ const buildTrain = (allTrips: DayTrips, leg: Leg, realtime: RealtimeLookup): Tra
     departureTime: localIsoFromTs(displayTs(s)),
     platform: livePlatform(s),
     crowded: 0,
+    platformChanged: platformChanged(s),
+    cancelled: stopCancelled(s),
   }))
 
+  const boardRt = rt(board.railId)
   return {
     trainNumber: trip.trainNumber,
     orignStation: board.railId,
@@ -341,8 +353,12 @@ const buildTrain = (allTrips: DayTrips, leg: Leg, realtime: RealtimeLookup): Tra
     stopStations,
     handicap: 0,
     crowded: 0,
-    trainPosition: { calcDiffMinutes: rt(board.railId).delayMin },
+    trainPosition: { calcDiffMinutes: boardRt.delayMin },
     routeStations,
+    isCancelled: boardRt.trainCancelled ? true : undefined,
+    actualLastStationId: boardRt.liveDestRailId,
+    originPlatformChanged: platformChanged(board),
+    destPlatformChanged: platformChanged(alight),
   }
 }
 

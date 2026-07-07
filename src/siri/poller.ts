@@ -195,6 +195,7 @@ const runCycle = async () => {
         expectedArrNaive: v.expectedArrival ? siriIsoToNaiveEpoch(v.expectedArrival) : null,
         status: v.arrivalStatus,
         platform: parsePlatform(v.arrivalPlatform),
+        destRailId: v.destinationRef ? stopCodeToRailId.get(v.destinationRef) : undefined,
         location: v.location,
         vehicleRef: v.vehicleRef,
       })

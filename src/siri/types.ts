@@ -70,6 +70,10 @@ export type TrainRealtime = {
   latestDelayMin: number
   /** Keyed by rail_id (3700-style station id). */
   stations: Record<string, StationRealtime>
+  /** Every monitored station reports cancelled (2+ stations) — the whole run is cancelled. */
+  cancelled?: boolean
+  /** Live destination (rail_id) from DestinationRef, only when it differs from the schedule. */
+  liveDestRailId?: number
   location?: { lat: number; lon: number }
   vehicleRef?: string
 }
@@ -89,6 +93,12 @@ export type RealtimeInfo = {
   delayMin: number
   /** Live platform override, when SIRI reported one for this station. */
   platform?: number
+  /** ArrivalStatus at this station, when monitored (onTime/early/delayed/cancelled/arrived/noReport). */
+  status?: string
+  /** Train-level (same value for every station of the train): the whole run is cancelled. */
+  trainCancelled?: boolean
+  /** Train-level: live destination rail_id when SIRI reports a different last stop. */
+  liveDestRailId?: number
 }
 
 export type RealtimeLookup = (serviceDate: string, trainNumber: number, railId: number) => RealtimeInfo
