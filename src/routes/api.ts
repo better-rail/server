@@ -3,7 +3,7 @@ import { Router } from "express"
 import { buildRide } from "../utils/ride-utils"
 import { RideRequestSchema } from "../types/ride"
 import { createRateLimiter } from "../utils/rate-limiter"
-import { railProxy, handleSearchTrainRequest } from "./proxy"
+import { handleRailApiRequest, handleSearchTrainRequest } from "./rail-api"
 import { siriDebugRouter } from "./siri-debug"
 import { DeleteRideBody, UpdateRideTokenBody, bodyValidator } from "./validations"
 import { endRideNotifications, startRideNotifications, updateRideToken } from "../rides"
@@ -41,7 +41,8 @@ router.get(
   handleSearchTrainRequest,
 )
 
-// Use proxy for all other rail API requests
-router.use("/rail-api", createRateLimiter(10 * 60 * 1000, 1000), railProxy)
+// All other rail API paths: timetable searches from GTFS, retired legacy
+// endpoints answered with an empty payload (no upstream proxy anymore).
+router.use("/rail-api", createRateLimiter(10 * 60 * 1000, 1000), handleRailApiRequest)
 
 export { router }

@@ -23,7 +23,7 @@ To follow these steps, ensure that [Bun](https://bun.sh) is installed (the serve
 - `/logs`: logger and lognames sit here
 - `/requests`: timetable engine (`gtfs-route-api.ts`) and the rides route fetcher
 - `/rides`: notification scheduler
-- `/routes`: express router (incl. the `/rail-api` proxy that serves GTFS timetable + proxies the rest, and the token-guarded `/siri` debug routes)
+- `/routes`: express router (incl. the `/rail-api` legacy surface served from GTFS, and the token-guarded `/siri` debug routes)
 - `/siri`: SIRI-SM real-time pipeline — poller (standalone entrypoint `main.ts`), correlation and the redis snapshot
 - `/scripts`: standalone CLIs — `download-feed`, `ingest-gtfs`, `build-station-mapping`, `verify-mapping`
 - `/tests`: all the tests are here
@@ -38,17 +38,19 @@ The train timetable comes from the **Israel MOT GTFS** static feed
 **Postgres**, not the Israel Railways API. The server exposes the legacy
 `searchTrainForMobile` shape (under `/api/v1/rail-api/...`) backed by a rail
 journey planner over the GTFS schedule, so every client (app + native widgets)
-only needed a base-URL change. Announcements, popup messages and station info are
-**not** migrated — they keep proxying upstream to the Israel Railways API through
-the same `/rail-api` route.
+only needed a base-URL change. The Israel Railways API is not called at all
+anymore: the announcements / popup messages / station info endpoints that used
+to proxy upstream are retired and answer with an empty legacy envelope, so
+shipped clients render "no data" instead of erroring.
 
 **Platforms:** GTFS has no train→platform link (rail `stop_times` reference
-station-level stops with an empty `platform_code`). The scheduled platforms come
-from the Israel Railways API, fetched **at ingest** (`requests/platforms.ts`,
-one query per route per service-day-type) and baked into
-`stop_times.platform_code` — so the live query path stays pure DB (~99% of rail
-stop_times get a platform). Set `RAIL_URL` / `RAIL_API_KEY` for the ingest;
-without them, platforms are simply left empty.
+station-level stops with an empty `platform_code`). The scheduled platforms are
+**learned from SIRI**: every poll cycle the poller upserts the platform it
+observes per (train, station) into the feed-independent `train_platforms` table
+(`siri/platform-store.ts`), and the nightly ingest bakes those values into
+`stop_times.platform_code` — so the live query path stays pure DB. Coverage
+accumulates as trains are observed; the previous feed's platforms are carried
+forward at ingest to fill any holes.
 
 Station numbers differ between the two systems. The canonical IDs everywhere
 (app, native, Live Activity) stay the Israel-Railways `3700`-style IDs; the GTFS
@@ -100,9 +102,6 @@ test-fixture source) and `GET /api/v1/siri/unmatched` (correlation misses).
 - `PORT`: port express listens to
 - `REDIS_URL`: connection string for redis
 - `DATABASE_URL`: connection string for Postgres (GTFS timetable store)
-- `RAIL_URL`: url of the rail api (used to proxy announcements / popups / station info, and at ingest to fetch platforms)
-- `RAIL_API_KEY`: api key for the rail api (server-side proxy + ingest platform fetch)
-- `PROXY_URL`: url of the proxy service
 - `APPLE_BUNDLE_ID`: bundle id of the iOS app to send notifications to
 - `APPLE_TEAM_ID`: team id for the developer account associated with the iOS app
 - `APPLE_KEY_ID`: apple notifications key id

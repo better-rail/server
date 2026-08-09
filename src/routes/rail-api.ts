@@ -1,5 +1,4 @@
 import { Request, Response } from "express"
-import { railUrl, railApiKey } from "../data/config"
 import { logNames, logger } from "../logs"
 import { searchTrain, ScheduleType } from "../requests/gtfs-route-api"
 
@@ -43,40 +42,35 @@ const handleSearchTrainRequest = async (req: Request, res: Response) => {
 const isTimetableSearchPath = (path: string) =>
   path.endsWith("/timetable/searchTrainForMobile") || path.endsWith("/timetable/searchTrain")
 
-const railProxy = async (req: Request, res: Response) => {
-  try {
-    // The timetable is migrated to GTFS: intercept the search endpoints (POST
-    // searchTrainForMobile and the legacy searchTrain) and serve from Postgres.
-    if (req.method === "POST" && isTimetableSearchPath(req.path)) {
-      const { fromStation, toStation, date, hour, scheduleType } = req.body ?? {}
-      await runTimetableSearch(res, { fromStation, toStation, date, hour, scheduleType })
-      return
-    }
+// The response envelope the Israel Railways API wrapped every payload in.
+// Retired endpoints keep answering with it (empty) so shipped clients render
+// "no data" instead of erroring.
+const legacyEnvelope = (result: unknown) => ({
+  creationDate: new Date().toISOString(),
+  version: "1",
+  successStatus: 1,
+  statusCode: 200,
+  errorMessages: null,
+  result,
+})
 
-    // Everything else (railupdates, PopUpMessages, station info) is NOT migrated
-    // and keeps proxying upstream to the Israel Railways API with our key, so the
-    // client never has to call it directly.
-    const queryIndex = req.url.indexOf("?")
-    const search = queryIndex === -1 ? "" : req.url.slice(queryIndex)
-
-    const url = `${railUrl}${req.path}${search}`
-    const response = await fetch(url, {
-      method: req.method,
-      headers: {
-        "Content-Type": req.headers["content-type"] || "application/json",
-        "Ocp-Apim-Subscription-Key": railApiKey,
-        Accept: "application/json",
-      },
-      body: req.method !== "GET" ? JSON.stringify(req.body) : undefined,
-    })
-    const data = await response.json()
-    res.status(response.status).json(data)
-  } catch (error: any) {
-    res.status(500).json({
-      error: "Failed to fetch rail data",
-      message: error.message,
-    })
+/**
+ * `/rail-api/*` — the legacy Israel Railways API surface, now fully served
+ * in-house. The timetable search endpoints run on GTFS/Postgres; everything
+ * else (railupdates, PopUpMessages, station info) is retired — the upstream
+ * proxy is gone — and answers with an empty legacy envelope.
+ */
+const handleRailApiRequest = async (req: Request, res: Response) => {
+  if (req.method === "POST" && isTimetableSearchPath(req.path)) {
+    const { fromStation, toStation, date, hour, scheduleType } = req.body ?? {}
+    await runTimetableSearch(res, { fromStation, toStation, date, hour, scheduleType })
+    return
   }
+
+  // Station info is an object result in shipped clients (its screen crashes on
+  // an array), so it gets null; the list endpoints get [].
+  const result = req.path.includes("/Stations/GetStationInformation") ? null : []
+  res.status(200).json(legacyEnvelope(result))
 }
 
-export { railProxy, handleSearchTrainRequest }
+export { handleRailApiRequest, handleSearchTrainRequest }
