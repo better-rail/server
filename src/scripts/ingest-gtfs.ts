@@ -21,10 +21,10 @@ import { from as copyFrom } from "pg-copy-streams"
 import type { PoolClient } from "pg"
 
 import { applySchema, getActiveFeed, getPool, invalidateActiveFeedCache, query, withTransaction } from "../db"
-import { parseRailFeed, RailFeed, GtfsStopTime } from "../gtfs/parse"
-import { matchStations, MatchResult } from "../gtfs/station-match"
+import { parseRailFeed, RailFeed } from "../gtfs/parse"
+import { matchStations } from "../gtfs/station-match"
 import { downloadFeed, extractFeed } from "../gtfs/download"
-import { fetchPlatforms, platformKey, PlatformQuery } from "../requests/platforms"
+import { loadLearnedPlatforms, platformKey } from "../siri/platform-store"
 
 const FEED_TABLES = ["stops", "station_map", "routes", "trips", "calendar_dates", "stop_times"]
 
@@ -36,62 +36,8 @@ const argGtfsDir = (): string | null => {
   return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : null
 }
 
-const SERVICE_DAY_TYPE = (date: string): string => {
-  const dow = new Date(`${date}T00:00:00Z`).getUTCDay()
-  return dow === 6 ? "sat" : dow === 5 ? "fri" : "weekday"
-}
-
-/**
- * One platform query per route (origin->dest rail ids) per service-day-type it
- * runs (weekday / Friday / Saturday). Each call's routeStations cover every
- * station its trains call at, so this captures the platform for every train.
- */
-const buildPlatformQueries = (feed: RailFeed, match: MatchResult): PlatformQuery[] => {
-  const railOf = (stopId: string) => {
-    const node = feed.platformToStationNode.get(stopId)
-    return node ? match.gtfsStationToRailId.get(node) ?? null : null
-  }
-  const datesByService = new Map<string, string[]>()
-  for (const c of feed.calendarDates) {
-    const list = datesByService.get(c.serviceId) ?? []
-    list.push(c.serviceDate)
-    datesByService.set(c.serviceId, list)
-  }
-  const stopsByTrip = new Map<string, GtfsStopTime[]>()
-  for (const st of feed.stopTimes) {
-    const list = stopsByTrip.get(st.tripId) ?? []
-    list.push(st)
-    stopsByTrip.set(st.tripId, list)
-  }
-  const pairDates = new Map<string, Set<string>>()
-  for (const [tripId, trip] of feed.trips) {
-    const stops = (stopsByTrip.get(tripId) ?? []).slice().sort((a, b) => a.stopSequence - b.stopSequence)
-    const first = stops.map((s) => railOf(s.stopId)).find((r) => r !== null)
-    const last = [...stops].reverse().map((s) => railOf(s.stopId)).find((r) => r !== null)
-    if (!first || !last || first === last) continue
-    const key = `${first}:${last}`
-    let dates = pairDates.get(key)
-    if (!dates) {
-      dates = new Set()
-      pairDates.set(key, dates)
-    }
-    for (const d of datesByService.get(trip.serviceId) ?? []) dates.add(d)
-  }
-  const queries: PlatformQuery[] = []
-  for (const [key, dates] of pairDates) {
-    const [origin, dest] = key.split(":").map(Number)
-    const byType = new Map<string, string>()
-    for (const date of dates) {
-      const type = SERVICE_DAY_TYPE(date)
-      if (!byType.has(type)) byType.set(type, date)
-    }
-    for (const date of byType.values()) queries.push({ origin, dest, date })
-  }
-  return queries
-}
-
 // Platforms already baked into a feed, keyed `${trainNumber}:${railId}`. Used to
-// carry platforms forward when a fresh API fetch fails or misses some trains.
+// carry platforms forward for (train, station) pairs SIRI hasn't observed yet.
 const loadFeedPlatforms = async (feedId: string): Promise<Map<string, number>> => {
   const map = new Map<string, number>()
   const { rows } = await query<{ train_number: number; rail_id: number; platform_code: string }>(
@@ -152,20 +98,20 @@ const loadFeed = async (feed: RailFeed, checksum: string): Promise<string> => {
     log(`⚠️ ${match.unmatched.length} known station(s) absent from this feed (no service): ${match.unmatched.map((m) => m.railId).join(", ")}`)
   }
 
-  // GTFS has no train platforms; fetch the scheduled ones from the Israel Railways
-  // API and bake them into stop_times.platform_code so the live query path stays
-  // pure DB. Best-effort: if the API is unavailable, platforms are just left empty.
-  const platformQueries = buildPlatformQueries(feed, match)
-  const platforms = await fetchPlatforms(platformQueries)
-  log(`platforms: ${platforms.size} (train,station) entries from ${platformQueries.length} route queries`)
+  // GTFS has no train platforms; bake in the scheduled platforms the SIRI poller
+  // has learned (siri/platform-store.ts) so the live query path stays pure DB.
+  // Best-effort: a (train, station) pair never observed just has no platform.
+  const platforms = await loadLearnedPlatforms()
+  log(`platforms: ${platforms.size} SIRI-learned (train,station) entries`)
 
-  // Carry platforms forward from the currently-active feed so a failed or partial
-  // API fetch doesn't wipe them — a (train, station) platform is date-stable, so
-  // the previous feed's value is still valid where the fresh fetch came up empty.
+  // Carry platforms forward from the currently-active feed — a (train, station)
+  // platform is date-stable, so the previous feed's value (including ones from
+  // the retired Israel Railways fetch) still fills holes the learned table
+  // hasn't covered yet.
   const previousFeed = await getActiveFeed()
   const previousPlatforms = previousFeed ? await loadFeedPlatforms(previousFeed.feedId) : new Map<string, number>()
   if (!platforms.size && previousPlatforms.size) {
-    log(`⚠️ no platforms from the API — carrying forward ${previousPlatforms.size} from feed ${previousFeed!.feedId}`)
+    log(`⚠️ no SIRI-learned platforms yet — carrying forward ${previousPlatforms.size} from feed ${previousFeed!.feedId}`)
   }
 
   // Stops to load: every called platform stop plus its station node.
@@ -227,8 +173,8 @@ const loadFeed = async (feed: RailFeed, checksum: string): Promise<string> => {
         const railId = nodeId ? match.gtfsStationToRailId.get(nodeId) ?? null : null
         const trainNumber = feed.trips.get(st.tripId)?.trainNumber
         const key = railId && trainNumber ? platformKey(trainNumber, railId) : null
-        // Prefer the fresh API platform, then the previous feed's, then the GTFS
-        // platform_code (empty for rail), then none.
+        // Prefer the SIRI-learned platform, then the previous feed's, then the
+        // GTFS platform_code (empty for rail), then none.
         const platform = key ? platforms.get(key) ?? previousPlatforms.get(key) : undefined
         const platformCode = platform ?? feed.stops.get(st.stopId)?.platformCode ?? null
         return [newFeedId, st.tripId, st.stopSequence, st.stopId, st.arrOffsetSec, st.depOffsetSec, platformCode, railId]

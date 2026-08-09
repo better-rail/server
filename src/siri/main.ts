@@ -9,6 +9,7 @@
 import express from "express"
 
 import { env, port } from "../data/config"
+import { applySchema } from "../db"
 import { connectToRedis } from "../data/redis"
 import { logNames, logger, startLogger } from "../logs"
 import { startSiriPoller } from "./poller"
@@ -22,6 +23,16 @@ app.get("/isAlive", (req, res) => {
 app.listen(port, async () => {
   startLogger()
   await connectToRedis()
+
+  // Idempotent; guarantees train_platforms exists before the first poll cycle
+  // tries to record observed platforms (the poller may deploy before an ingest
+  // or web-service start has applied the updated schema).
+  try {
+    await applySchema()
+  } catch (error) {
+    logger.error(logNames.db.pool.error, { error })
+  }
+
   startSiriPoller()
   logger.info(logNames.server.listening, { port, env })
 })

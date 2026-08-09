@@ -83,7 +83,7 @@ export const logNames = {
     },
   },
   platforms: {
-    failed: "Failed to fetch platforms from the Israel Railways API",
+    writeFailed: "Failed to record SIRI-observed platforms",
   },
   siri: {
     started: "SIRI poller started",

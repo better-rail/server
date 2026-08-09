@@ -87,3 +87,16 @@ CREATE TABLE IF NOT EXISTS stop_times (
   PRIMARY KEY (feed_id, trip_id, stop_sequence)
 );
 CREATE INDEX IF NOT EXISTS st_station_idx ON stop_times (feed_id, rail_id, dep_offset_sec);
+
+-- Scheduled platforms learned from the SIRI realtime feed: the poller upserts
+-- the platform it observes per (train, station); the GTFS ingest bakes them into
+-- stop_times.platform_code (see siri/platform-store.ts). NOT feed-scoped — train
+-- numbers and rail ids are stable across feeds — so it survives feed swaps and
+-- is never pruned.
+CREATE TABLE IF NOT EXISTS train_platforms (
+  train_number INTEGER NOT NULL,
+  rail_id      INTEGER NOT NULL,               -- 3700-style id
+  platform     INTEGER NOT NULL,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (train_number, rail_id)
+);

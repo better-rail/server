@@ -17,6 +17,7 @@ import { loadDayTrips } from "../requests/gtfs-route-api"
 import { addDays } from "../utils/gtfs-time"
 import { fetchStopMonitoring, redactKey } from "./client"
 import { CorrelationIndex, buildCorrelationIndex, matchJourney, naiveNowMs, siriIsoToNaiveEpoch, visitServiceDate } from "./correlate"
+import { recordObservedPlatforms } from "./platform-store"
 import { MatchedVisit, buildSnapshot, writeRaw, writeSnapshot, writeStatus, writeUnmatched } from "./snapshot"
 import { NormalizedVisit, SiriSnapshot, UnmatchedSample } from "./types"
 
@@ -223,6 +224,14 @@ const runCycle = async () => {
   await writeUnmatched(unmatched)
   await writeRaw(rawChunks)
 
+  // Persist observed platforms — the scheduled-platform source now that the
+  // Israel Railways API is gone (the ingest bakes these into stop_times).
+  const platformsRecorded = await recordObservedPlatforms(
+    matched
+      .filter((m) => m.platform !== undefined)
+      .map((m) => ({ trainNumber: m.tripRef.trainNumber, railId: m.railId, platform: m.platform! })),
+  )
+
   const unmatchedTotal = Object.values(counters.unmatchedByReason).reduce((a, b) => a + b, 0)
   if (unmatchedTotal > 0 && Date.now() - lastUnmatchedLogAt > UNMATCHED_LOG_INTERVAL_MS) {
     lastUnmatchedLogAt = Date.now()
@@ -234,6 +243,7 @@ const runCycle = async () => {
     chunksFetched: rawChunks.length,
     visitsLastPoll: visits.length,
     trainsTracked: Object.keys(snapshot.trains).length,
+    platformsRecorded,
     topDelays: topDelays(snapshot),
     ...counters,
   }
