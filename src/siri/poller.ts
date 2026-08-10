@@ -18,7 +18,7 @@ import { addDays } from "../utils/gtfs-time"
 import { fetchStopMonitoring, redactKey } from "./client"
 import { CorrelationIndex, buildCorrelationIndex, matchJourney, naiveNowMs, siriIsoToNaiveEpoch, visitServiceDate } from "./correlate"
 import { recordObservedPlatforms } from "./platform-store"
-import { MatchedVisit, buildSnapshot, writeRaw, writeSnapshot, writeStatus, writeUnmatched } from "./snapshot"
+import { MatchedVisit, buildSnapshot, readSnapshot, writeRaw, writeSnapshot, writeStatus, writeUnmatched } from "./snapshot"
 import { NormalizedVisit, SiriSnapshot, UnmatchedSample } from "./types"
 
 const MAX_BACKOFF_MS = 300_000
@@ -31,6 +31,11 @@ let currentFeedId: string | undefined
 let stopCodeToRailId = new Map<string, number>()
 let evictedStopCodes = new Set<string>()
 let indexCache = new Map<string, CorrelationIndex>()
+
+// The carry-forward baseline (last published snapshot). Seeded from redis once
+// so a restart doesn't drop carried departed-visit state that's still in TTL.
+let lastSnapshot: SiriSnapshot | null = null
+let snapshotSeeded = false
 
 let consecutiveFailures = 0
 let lastSuccessAt: number | null = null
@@ -91,6 +96,7 @@ const ensureIndexes = async (feedId: string, visitDates: Set<string>) => {
 
 const topDelays = (snapshot: SiriSnapshot, limit = 20) =>
   Object.entries(snapshot.trains)
+    .filter(([, t]) => !t.ended)
     .map(([train, t]) => ({ train, routeId: t.routeId, delayMin: t.latestDelayMin }))
     .sort((a, b) => b.delayMin - a.delayMin)
     .slice(0, limit)
@@ -219,8 +225,13 @@ const runCycle = async () => {
     }
   }
 
-  const snapshot = buildSnapshot(matched, feed.feedId, naiveNowMs())
+  if (!snapshotSeeded) {
+    lastSnapshot = await readSnapshot()
+    snapshotSeeded = true
+  }
+  const snapshot = buildSnapshot(matched, feed.feedId, naiveNowMs(), lastSnapshot)
   await writeSnapshot(snapshot)
+  lastSnapshot = snapshot
   await writeUnmatched(unmatched)
   await writeRaw(rawChunks)
 
@@ -243,6 +254,7 @@ const runCycle = async () => {
     chunksFetched: rawChunks.length,
     visitsLastPoll: visits.length,
     trainsTracked: Object.keys(snapshot.trains).length,
+    endedTrainsCarried: Object.values(snapshot.trains).filter((t) => t.ended).length,
     platformsRecorded,
     topDelays: topDelays(snapshot),
     ...counters,

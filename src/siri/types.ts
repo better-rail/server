@@ -62,6 +62,12 @@ export type StationRealtime = {
   platform?: number
   /** ArrivalStatus verbatim (onTime/early/delayed/cancelled/arrived/noReport). */
   status?: string
+  /**
+   * Naive epoch ms of the cycle that started carrying this entry forward after
+   * its visit left the feed (the train departed the stop). Absent = live in the
+   * latest poll. Carried entries expire siriCarrySeconds after this.
+   */
+  seenAt?: number
 }
 
 export type TrainRealtime = {
@@ -76,6 +82,8 @@ export type TrainRealtime = {
   liveDestRailId?: number
   location?: { lat: number; lon: number }
   vehicleRef?: string
+  /** The train left the feed (run over / out of the preview window); everything here is frozen last-known state. */
+  ended?: boolean
 }
 
 export type SiriSnapshot = {

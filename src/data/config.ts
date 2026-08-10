@@ -31,6 +31,11 @@ export const siriPollSeconds = Number(process.env.SIRI_POLL_SECONDS) || 30
 export const siriPreviewInterval = process.env.SIRI_PREVIEW_INTERVAL || "PT90M"
 export const siriChunkSize = Number(process.env.SIRI_CHUNK_SIZE) || 70
 export const siriStaleSeconds = Number(process.env.SIRI_STALE_SECONDS) || 600
+// The feed only reports upcoming stop visits, so realtime data (platform
+// changes, statuses, delays) would vanish the moment the train departs each
+// stop. Last-known entries are carried forward in the snapshot for this long
+// past their final sighting — a full day of history for every run.
+export const siriCarrySeconds = Number(process.env.SIRI_CARRY_SECONDS) || 86_400
 // "in-process" runs the poller inside the web service (fallback when the
 // MOT-registered egress IP belongs to it); default is the standalone `bun run siri`.
 export const siriPollerMode = process.env.SIRI_POLLER_MODE

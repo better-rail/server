@@ -90,6 +90,13 @@ fallback), and publishes a snapshot to redis (`siri:snapshot`). The web service
 reads that snapshot inside `searchTrain` — any failure (poller down, stale
 snapshot, no redis) degrades to schedule-only results.
 
+The feed is forward-looking, so a stop's visit vanishes the moment the train
+departs it (and the whole train once the run is over). The snapshot **carries
+those entries forward** from the previous cycle — platform changes, statuses
+and final delays keep being served after departure instead of reverting to the
+schedule — marked with `seenAt`/`ended` and expiring `SIRI_CARRY_SECONDS`
+(default 24h) after their last live sighting.
+
 Remote debugging goes through token-guarded routes (404 without
 `SIRI_DEBUG_TOKEN` + an `x-debug-token` header): `GET /api/v1/siri/status`
 (poller health + match rates), `GET /api/v1/siri/raw` (last raw payloads — the
@@ -114,4 +121,4 @@ test-fixture source) and `GET /api/v1/siri/unmatched` (correlation misses).
 - `SIRI_TLS_INSECURE`: `true` skips TLS verification for SIRI requests only (fallback until `SIRI_CA_PEM` is captured)
 - `SIRI_DEBUG_TOKEN`: secret for the `/api/v1/siri/*` debug routes; unset = routes 404
 - `SIRI_POLLER_MODE`: set to `in-process` to run the poller inside the web service instead of the standalone `bun run siri` service
-- `SIRI_POLL_SECONDS` / `SIRI_PREVIEW_INTERVAL` / `SIRI_CHUNK_SIZE` / `SIRI_STALE_SECONDS`: optional tuning (defaults 30 / PT90M / 70 / 600)
+- `SIRI_POLL_SECONDS` / `SIRI_PREVIEW_INTERVAL` / `SIRI_CHUNK_SIZE` / `SIRI_STALE_SECONDS` / `SIRI_CARRY_SECONDS`: optional tuning (defaults 30 / PT90M / 70 / 600 / 86400)

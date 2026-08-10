@@ -9,7 +9,7 @@
  * no redis, no snapshot, or a stale snapshot all yield delay 0 + scheduled
  * platforms — exactly the pre-SIRI behavior.
  */
-import { siriStaleSeconds } from "../data/config"
+import { siriCarrySeconds, siriStaleSeconds } from "../data/config"
 import { getRedisClient } from "../data/redis"
 import { logNames, logger } from "../logs"
 import type { TripRef } from "./correlate"
@@ -47,7 +47,59 @@ const usableDelay = (m: MatchedVisit, schedArr: number | undefined): number | nu
   return Math.round((m.expectedArrNaive - schedArr) / 60_000)
 }
 
-export const buildSnapshot = (matched: MatchedVisit[], feedId: string, nowNaiveMs: number): SiriSnapshot => {
+/**
+ * The feed is forward-looking (StartTime = now + PreviewInterval), so a visit
+ * disappears the moment its train departs the stop — and the whole train once
+ * the run is over. Rebuilding from live visits alone would revert departed
+ * stops to schedule-only within one poll (a platform change un-flags right as
+ * the train leaves). Carry the previous snapshot's entries into the gaps: live
+ * data always wins, carried entries are stamped with seenAt and dropped once
+ * they're siriCarrySeconds old.
+ */
+const carryForward = (trains: Record<string, TrainRealtime>, previous: SiriSnapshot | null | undefined, nowNaiveMs: number) => {
+  if (!previous) return
+  const expired = (s: StationRealtime) => s.seenAt !== undefined && nowNaiveMs - s.seenAt > siriCarrySeconds * 1000
+  const carry = (s: StationRealtime): StationRealtime => (s.seenAt === undefined ? { ...s, seenAt: nowNaiveMs } : s)
+
+  for (const [key, prevTrain] of Object.entries(previous.trains)) {
+    const train = trains[key]
+    if (train) {
+      // Still live. The train-level fields stay live-derived, with two guards
+      // against the evidence window shrinking as visits age out:
+      // a cancelled run keeps losing monitored visits, so once fewer than 2
+      // remain the 2+ rule above can't see the cancellation anymore — keep it
+      // while no live station contradicts it (an un-cancelled run reports
+      // onTime again and clears the flag);
+      const liveStations = Object.values(train.stations)
+      if (prevTrain.cancelled && !train.cancelled && liveStations.every((s) => s.status === "cancelled")) train.cancelled = true
+      // and when every live delay is unusable (cancelled/noReport blackout),
+      // the previous train-level delay beats reverting to 0.
+      if (liveStations.every((s) => s.delayMin === null)) train.latestDelayMin = prevTrain.latestDelayMin
+
+      // Fill only the stations the feed no longer reports (departed stops).
+      for (const [railId, station] of Object.entries(prevTrain.stations)) {
+        if (train.stations[railId] !== undefined || expired(station)) continue
+        train.stations[railId] = carry(station)
+      }
+    } else {
+      // The train left the feed entirely: freeze its last-known state — delays,
+      // platforms, statuses, cancellation, live destination — until every
+      // station entry has expired.
+      const stations: Record<string, StationRealtime> = {}
+      for (const [railId, station] of Object.entries(prevTrain.stations)) {
+        if (!expired(station)) stations[railId] = carry(station)
+      }
+      if (Object.keys(stations).length > 0) trains[key] = { ...prevTrain, ended: true, stations }
+    }
+  }
+}
+
+export const buildSnapshot = (
+  matched: MatchedVisit[],
+  feedId: string,
+  nowNaiveMs: number,
+  previous?: SiriSnapshot | null,
+): SiriSnapshot => {
   const trains: Record<string, TrainRealtime> = {}
 
   for (const m of matched) {
@@ -96,6 +148,8 @@ export const buildSnapshot = (matched: MatchedVisit[], feedId: string, nowNaiveM
     if (stations.length >= 2 && stations.every((s) => s.status === "cancelled")) train.cancelled = true
   }
 
+  carryForward(trains, previous, nowNaiveMs)
+
   return { updatedAt: Date.now(), feedId, trains }
 }
 
@@ -128,7 +182,8 @@ export const writeRaw = (rawChunks: string[], capBytes = 4_000_000) => {
   return setKey(RAW_KEY, JSON.stringify(kept), DEBUG_TTL_SEC)
 }
 
-const readSnapshot = async (): Promise<SiriSnapshot | null> => {
+/** Uncached read — the poller seeds its carry-forward baseline from this after a restart. */
+export const readSnapshot = async (): Promise<SiriSnapshot | null> => {
   try {
     const raw = await getRedisClient()?.get(SNAPSHOT_KEY)
     return raw ? (JSON.parse(raw) as SiriSnapshot) : null
@@ -165,7 +220,13 @@ export const makeRealtimeLookup = (snapshot: SiriSnapshot | null, nowMs = Date.n
     const train = snapshot.trains[`${serviceDate}#${trainNumber}`]
     if (!train) return { delayMin: 0 }
     const station = train.stations[railId]
-    const raw = station?.delayMin ?? train.latestDelayMin
+    // Carried entries (seenAt) keep platform/status alive after the visit left
+    // the feed, but their delay is history: while the train is still running
+    // the train-level delay is the current one, so it stays authoritative for
+    // departed stops. Once the run is over (ended), the per-station record is
+    // the best answer there is.
+    const stationDelay = station === undefined || (station.seenAt !== undefined && !train.ended) ? null : station.delayMin
+    const raw = stationDelay ?? train.latestDelayMin
     // IR trains don't run early; negative predictions are noise — clamp.
     return {
       delayMin: Math.max(0, raw),
