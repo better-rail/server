@@ -164,6 +164,19 @@ describe("planTravels", () => {
     expect(travels.map((t: any) => t.trains[0].trainNumber)).toEqual([3])
   })
 
+  it("keeps a direct train even when a later departure with a change arrives sooner", () => {
+    // Real case: Ra'anana West -> TLV HaShalom. Train 647 (direct via the Sharon
+    // loop, dep 13:54, arr 14:41) must not be dropped for the 14:05 ride-north-to-
+    // Herzliya + change option arriving 14:39 — more changes never dominate fewer.
+    const trips = table(
+      trip("direct", 647, [[2940, "13:54", 2], [4600, "14:41", 3]]),
+      trip("north", 644, [[2940, "14:05", 1], [3500, "14:11", 4]]),
+      trip("south", 749, [[3500, "14:24", 3], [4600, "14:39", 2]]),
+    )
+    const travels = planTravels(trips, 2940, 4600, ts("13:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[647], [644, 749]])
+  })
+
   it("drops itineraries dominated by a shorter route with the same arrival", () => {
     const trips = table(
       trip("a", 100, [[3700, "08:00", 1], [3400, "09:00", 1]]),

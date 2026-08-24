@@ -463,15 +463,22 @@ export const planTravels = (
   }
 
   // Drop dominated itineraries: one that departs no later AND arrives no earlier
-  // than another is strictly worse (e.g. leaves earlier but arrives much later).
-  // Walk latest-departure first, keeping one only if it beats the best arrival so far.
+  // than another with the same or fewer changes is strictly worse (e.g. leaves
+  // earlier but arrives much later). More changes never dominate fewer — a direct
+  // train stays listed even when a later departure with a change arrives a few
+  // minutes sooner (riders expect to see the direct train). Walk latest-departure
+  // first, keeping one only if it beats the best arrival so far at its change
+  // count or below.
   chosen.sort((a, b) => b.depTs - a.depTs || a.arrTs - b.arrTs)
   const kept: Candidate[] = []
-  let minArr = Infinity
+  const minArrByChanges: number[] = [] // index = change count, value = best arrival among kept
   for (const c of chosen) {
+    const changes = changesOf(c)
+    let minArr = Infinity
+    for (let k = 0; k <= changes; k++) minArr = Math.min(minArr, minArrByChanges[k] ?? Infinity)
     if (c.arrTs < minArr) {
       kept.push(c)
-      minArr = c.arrTs
+      minArrByChanges[changes] = c.arrTs
     }
   }
 
