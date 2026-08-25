@@ -237,6 +237,68 @@ const isBetterTransfer = (a: Boarding, b: Boarding): boolean => {
 }
 
 /**
+ * Best shared station to change from F1 (ridden from beyond its boarding stop)
+ * onto F2 (boarded before it alights at index `maxAlight2`), with the connection
+ * window within [minConnectionMs, maxConnectionMs]. Ranked by isBetterTransfer.
+ */
+const bestSharedBoarding = (
+  f1: TripData,
+  minBoard1: number,
+  f2: TripData,
+  maxAlight2: number,
+  minConnectionMs: number,
+  maxConnectionMs: number,
+): (Boarding & { p1: number; p2: number }) | null => {
+  // Earliest index F2 stops at each station, before its alighting stop.
+  const f2StationIndex = new Map<number, number>()
+  for (let p2 = 0; p2 < maxAlight2; p2++) {
+    const st = f2.stops[p2].railId
+    if (!f2StationIndex.has(st)) f2StationIndex.set(st, p2)
+  }
+
+  let best: (Boarding & { p1: number; p2: number }) | null = null
+  for (let p1 = minBoard1; p1 < f1.stops.length; p1++) {
+    const st = f1.stops[p1].railId
+    const p2 = f2StationIndex.get(st)
+    if (p2 === undefined) continue
+    const window = f2.stops[p2].depTs - f1.stops[p1].arrTs
+    if (window < minConnectionMs || window > maxConnectionMs) continue
+    const cand = { station: st, window, transferTime: f1.stops[p1].arrTs, p1, p2 }
+    if (best === null || isBetterTransfer(cand, best)) best = cand
+  }
+  return best
+}
+
+/**
+ * Remove pointless intermediate legs: when a later train in the journey can be
+ * boarded straight off an earlier one (they share a station the earlier train
+ * reaches before the later one departs), the legs in between only shuttle the
+ * rider away and back — same trains otherwise, same arrival, more changes.
+ * completeJourney produces such journeys when the direct wait exceeds
+ * MAX_CONNECTION_MS: e.g. Bat Yam -> Jerusalem at night arrives at Savidor 49
+ * min before the Jerusalem train leaves it, so the planner padded the wait with
+ * a Herzliya round trip that rides out of Savidor and back through it. Waiting
+ * long at one station beats detouring through it (the official rail.co.il
+ * planner keeps the single long change too), so the collapsed connection is
+ * exempt from MAX_CONNECTION_MS. Mutates `legs` in place.
+ */
+const collapseRedundantLegs = (allTrips: DayTrips, legs: Leg[], minConnectionMs: number): void => {
+  for (let i = 0; i < legs.length - 2; i++) {
+    // Try the farthest leg first so one collapse removes as many legs as possible.
+    for (let j = legs.length - 1; j > i + 1; j--) {
+      const f1 = allTrips.get(legs[i].tripKey)!
+      const f2 = allTrips.get(legs[j].tripKey)!
+      const direct = bestSharedBoarding(f1, legs[i].boardIndex + 1, f2, legs[j].alightIndex, minConnectionMs, Infinity)
+      if (!direct) continue
+      legs[i].alightIndex = direct.p1
+      legs[j].boardIndex = direct.p2
+      legs.splice(i + 1, j - i - 1)
+      break
+    }
+  }
+}
+
+/**
  * Move each change to the nicest station the two trains share, keeping the same
  * trains and arrival time. The journey planner picks transfer points to minimise
  * arrival; this re-picks *where* to change for comfort (larger window > earliest >
@@ -246,27 +308,8 @@ const optimizeTransfers = (allTrips: DayTrips, legs: Leg[], minConnectionMs: num
   for (let i = 0; i < legs.length - 1; i++) {
     const f1 = allTrips.get(legs[i].tripKey)!
     const f2 = allTrips.get(legs[i + 1].tripKey)!
-    const maxAlight2 = legs[i + 1].alightIndex
-
-    // Earliest index F2 stops at each station, before it alights at this leg's end.
-    const f2StationIndex = new Map<number, number>()
-    for (let p2 = 0; p2 < maxAlight2; p2++) {
-      const st = f2.stops[p2].railId
-      if (!f2StationIndex.has(st)) f2StationIndex.set(st, p2)
-    }
-
-    // Best shared station to change at: ride F1 past its boarding stop, board F2.
-    let best: (Boarding & { p1: number; p2: number }) | null = null
-    for (let p1 = legs[i].boardIndex + 1; p1 < f1.stops.length; p1++) {
-      const st = f1.stops[p1].railId
-      const p2 = f2StationIndex.get(st)
-      if (p2 === undefined) continue
-      const window = f2.stops[p2].depTs - f1.stops[p1].arrTs
-      if (window < minConnectionMs || window > MAX_CONNECTION_MS) continue
-      const cand = { station: st, window, transferTime: f1.stops[p1].arrTs, p1, p2 }
-      if (best === null || isBetterTransfer(cand, best)) best = cand
-    }
-
+    // Ride F1 past its boarding stop, board F2 before it alights at this leg's end.
+    const best = bestSharedBoarding(f1, legs[i].boardIndex + 1, f2, legs[i + 1].alightIndex, minConnectionMs, MAX_CONNECTION_MS)
     if (best) {
       legs[i].alightIndex = best.p1
       legs[i + 1].boardIndex = best.p2
@@ -421,6 +464,10 @@ export const planTravels = (
       }
     }
     if (!legs || legs.length === 0) continue
+
+    // Collapse before dedup: two detours around the same long wait reduce to the
+    // same trains and must count as one itinerary.
+    if (legs.length > 2) collapseRedundantLegs(allTrips, legs, effectiveMin)
 
     const key = legs.map((l) => allTrips.get(l.tripKey)!.trainNumber).join("-") + "@" + ft.depTs
     if (seen.has(key)) continue

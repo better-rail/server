@@ -211,6 +211,25 @@ describe("planTravels", () => {
     expect(travels[0].trains.map((t: any) => t.trainNumber)).toEqual([200, 201])
   })
 
+  it("waits at the shared station instead of detouring out and back through it", () => {
+    // Real case: Bat Yam-Yoseftal -> Jerusalem at night. Train 690 terminates at
+    // Savidor 01:00 and the Jerusalem train 703 leaves Savidor 01:49 — a 49-min
+    // wait, over MAX_CONNECTION_MS. The planner used to pad the wait with a
+    // Herzliya round trip (690 -> 700 -> 703) that rides back through Savidor.
+    // The official rail.co.il planner keeps the single long change — so must we.
+    const trips = table(
+      trip("t690", 690, [[9800, "00:40", 1], [4600, "00:57", 1], [3700, "01:00", 5]]),
+      trip("t700", 700, [[3700, "01:09", 1], [3500, "01:17", 5]]), // Savidor -> Herzliya shuttle
+      trip("t703", 703, [[3500, "01:40", 5], [3700, "01:49", 2], [8600, "02:01", 2], [680, "02:29", 4]]),
+    )
+    const travels = planTravels(trips, 9800, 680, ts("00:00"))
+    expect(travels).toHaveLength(1)
+    expect(travels[0].trains.map((t: any) => t.trainNumber)).toEqual([690, 703])
+    expect(travels[0].trains[0].destinationStation).toBe(3700) // change at Savidor…
+    expect(travels[0].trains[1].orignStation).toBe(3700)
+    expect(travels[0].arrivalTime).toBe("2026-06-27T02:29:00") // …same arrival as the detour
+  })
+
   it("prefers a direct train over a transfer for the same first train", () => {
     const trips = table(
       trip("a", 301, [[3700, "08:00", 1], [2300, "08:20", 2], [1300, "09:00", 1]]),
