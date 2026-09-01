@@ -5,11 +5,22 @@ import { searchTrain, ScheduleType } from "../requests/gtfs-route-api"
 const toScheduleType = (value: unknown): ScheduleType =>
   value === "ByArrival" || value === 2 || value === "2" ? "ByArrival" : "ByDeparture"
 
+const toFlag = (value: unknown): boolean => value === true || value === "true" || value === 1 || value === "1"
+
 // Run a GTFS-backed timetable search and reply with the emulated
 // `{ result: { travels } }` shape the Israel Railways API used to return.
+// `hideSlowTrains` is the app's "hide slow trains" toggle; absent (widgets, old
+// clients) every direct train is listed.
 const runTimetableSearch = async (
   res: Response,
-  params: { fromStation: unknown; toStation: unknown; date: unknown; hour: unknown; scheduleType: unknown },
+  params: {
+    fromStation: unknown
+    toStation: unknown
+    date: unknown
+    hour: unknown
+    scheduleType: unknown
+    hideSlowTrains?: unknown
+  },
 ) => {
   try {
     const result = await searchTrain(
@@ -18,6 +29,7 @@ const runTimetableSearch = async (
       String(params.date),
       String(params.hour),
       toScheduleType(params.scheduleType),
+      { hideSlowTrains: toFlag(params.hideSlowTrains) },
     )
     res.status(200).json(result)
   } catch (error: any) {
@@ -29,13 +41,14 @@ const runTimetableSearch = async (
 // Legacy GET `…/timetable/searchTrainLuzForDateTime` (old clients) — now served
 // from GTFS. scheduleType arrives as "1" (ByDeparture) / "2" (ByArrival).
 const handleSearchTrainRequest = async (req: Request, res: Response) => {
-  const { fromStation, toStation, date, hour, scheduleType } = req.query
+  const { fromStation, toStation, date, hour, scheduleType, hideSlowTrains } = req.query
   await runTimetableSearch(res, {
     fromStation,
     toStation,
     date,
     hour,
     scheduleType: scheduleType === "1" ? "ByDeparture" : "ByArrival",
+    hideSlowTrains,
   })
 }
 
@@ -62,8 +75,8 @@ const legacyEnvelope = (result: unknown) => ({
  */
 const handleRailApiRequest = async (req: Request, res: Response) => {
   if (req.method === "POST" && isTimetableSearchPath(req.path)) {
-    const { fromStation, toStation, date, hour, scheduleType } = req.body ?? {}
-    await runTimetableSearch(res, { fromStation, toStation, date, hour, scheduleType })
+    const { fromStation, toStation, date, hour, scheduleType, hideSlowTrains } = req.body ?? {}
+    await runTimetableSearch(res, { fromStation, toStation, date, hour, scheduleType, hideSlowTrains })
     return
   }
 
