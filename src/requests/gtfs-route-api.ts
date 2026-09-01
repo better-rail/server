@@ -31,6 +31,11 @@ const MAX_CONNECTION_MS = 45 * 60 * 1000 // longest allowed transfer wait (no lo
 // Among itineraries arriving at the same time, prefer fewer changes as long as the
 // fewer-change option is at most this much longer than the shortest one.
 const PREFER_FEWER_CHANGES_WINDOW_MS = 20 * 60 * 1000
+// "Hide slow trains" catch-up rule: a route is hidden when another one leaving
+// within this window arrives no more than the tolerance after it — waiting on the
+// platform costs a few minutes of arrival at most, so the slower ride is noise.
+const CATCH_UP_WAIT_MS = 60 * 60 * 1000
+const CATCH_UP_ARRIVAL_TOLERANCE_MS = 15 * 60 * 1000
 const MAX_ONWARD_ROUNDS = 2 // first train + 2 onward trips => up to 2 transfers
 // The client renders a whole day at once (no intra-day paging), so return the
 // full day (midnight to midnight) rather than just the next handful of departures.
@@ -477,18 +482,38 @@ export const planTravels = (
   // dominated by another direct train is dropped only with `hideSlowTrains`.
   // Walk latest-departure first, keeping one only if it beats the best arrival
   // so far at its change count or below.
+  //
+  // `hideSlowTrains` additionally drops a route that a *later* departure catches
+  // up with (see isCaughtUp). Nothing is ever hidden because of an earlier
+  // departure: a rider standing on the platform can only take what is still to
+  // come, so the last slow option before a gap has to stay listed even when the
+  // train just before it was far faster.
   chosen.sort((a, b) => b.depTs - a.depTs || a.arrTs - b.arrTs)
   const kept: Candidate[] = []
   const minArrByChanges: number[] = [] // index = change count, value = best arrival among kept
+
+  // True when a route already kept leaves within the hour after `c`, needs no more
+  // changes, and still arrives within the tolerance of it — take that one instead.
+  // `kept` is filled latest-departure first, so its tail holds the departures
+  // closest after `c`; stop as soon as one leaves past the wait window.
+  const isCaughtUp = (c: Candidate, changes: number) => {
+    for (let i = kept.length - 1; i >= 0; i--) {
+      const other = kept[i]
+      if (other.depTs > c.depTs + CATCH_UP_WAIT_MS) break
+      if (changesOf(other) <= changes && other.arrTs <= c.arrTs + CATCH_UP_ARRIVAL_TOLERANCE_MS) return true
+    }
+    return false
+  }
+
   for (const c of chosen) {
     const changes = changesOf(c)
     let minArr = Infinity
     for (let k = 0; k <= changes; k++) minArr = Math.min(minArr, minArrByChanges[k] ?? Infinity)
     const keepSlowDirect = changes === 0 && !options.hideSlowTrains
-    if (c.arrTs < minArr || keepSlowDirect) {
-      kept.push(c)
-      minArrByChanges[changes] = Math.min(minArrByChanges[changes] ?? Infinity, c.arrTs)
-    }
+    if (c.arrTs >= minArr && !keepSlowDirect) continue
+    if (options.hideSlowTrains && isCaughtUp(c, changes)) continue
+    kept.push(c)
+    minArrByChanges[changes] = Math.min(minArrByChanges[changes] ?? Infinity, c.arrTs)
   }
 
   kept.sort((a, b) => a.depTs - b.depTs)
