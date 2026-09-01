@@ -177,6 +177,31 @@ describe("planTravels", () => {
     expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[647], [644, 749]])
   })
 
+  it("lists a direct train shadowed by a faster direct train unless slow trains are hidden", () => {
+    // Real case: Ashkelon -> TLV HaShalom. Train 230 (07:00 -> 07:56) is dominated by
+    // 622 (07:06 -> 07:50); only the "hide slow trains" toggle should drop it.
+    const trips = table(
+      trip("slow", 230, [[5900, "07:00", 1], [4600, "07:56", 2]]),
+      trip("fast", 622, [[5900, "07:06", 1], [4600, "07:50", 3]]),
+      trip("next", 232, [[5900, "07:30", 1], [4600, "08:26", 2]]),
+    )
+    const numbers = (travels: any[]) => travels.map((t) => t.trains[0].trainNumber)
+    expect(numbers(planTravels(trips, 5900, 4600, ts("06:00")))).toEqual([230, 622, 232])
+    const hidden = planTravels(trips, 5900, 4600, ts("06:00"), Infinity, undefined, { hideSlowTrains: true })
+    expect(numbers(hidden)).toEqual([622, 232])
+  })
+
+  it("still lets a direct train dominate an itinerary with changes when slow trains are shown", () => {
+    const trips = table(
+      trip("slowA", 1, [[3700, "04:51", 1], [2300, "05:30", 2]]), // 1-change leg 1…
+      trip("slowB", 2, [[2300, "05:40", 5], [3400, "06:19", 1]]), // …arrives 06:19
+      trip("fast", 3, [[3700, "04:55", 1], [3400, "05:42", 1]]), // direct, arrives 05:42
+    )
+    const travels = planTravels(trips, 3700, 3400, ts("03:00"), Infinity, undefined, { hideSlowTrains: false })
+    // only 0-change itineraries are exempt from dominance pruning
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[3]])
+  })
+
   it("drops itineraries dominated by a shorter route with the same arrival", () => {
     const trips = table(
       trip("a", 100, [[3700, "08:00", 1], [3400, "09:00", 1]]),

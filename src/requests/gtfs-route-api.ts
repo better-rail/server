@@ -64,6 +64,12 @@ export type TripData = {
 
 export type DayTrips = Map<string, TripData>
 
+export type PlanOptions = {
+  // Drop a direct train that a faster direct train (departing later, arriving
+  // earlier) shadows. Off by default; set by the app's "hide slow trains" toggle.
+  hideSlowTrains?: boolean
+}
+
 type Leg = { tripKey: string; boardIndex: number; alightIndex: number }
 
 const toPlatform = (platformCode: string | null): number => {
@@ -377,6 +383,7 @@ export const planTravels = (
   queryTs: number,
   endTs: number = Infinity,
   realtime: RealtimeLookup = zeroRealtimeLookup,
+  options: PlanOptions = {},
 ): RailApiGetRoutesResult["result"]["travels"] => {
   // Candidate first trains: those boardable at the origin within [queryTs, endTs).
   // endTs bounds the response to the requested day so it doesn't bleed into the
@@ -466,9 +473,10 @@ export const planTravels = (
   // than another with the same or fewer changes is strictly worse (e.g. leaves
   // earlier but arrives much later). More changes never dominate fewer — a direct
   // train stays listed even when a later departure with a change arrives a few
-  // minutes sooner (riders expect to see the direct train). Walk latest-departure
-  // first, keeping one only if it beats the best arrival so far at its change
-  // count or below.
+  // minutes sooner (riders expect to see the direct train). A direct train
+  // dominated by another direct train is dropped only with `hideSlowTrains`.
+  // Walk latest-departure first, keeping one only if it beats the best arrival
+  // so far at its change count or below.
   chosen.sort((a, b) => b.depTs - a.depTs || a.arrTs - b.arrTs)
   const kept: Candidate[] = []
   const minArrByChanges: number[] = [] // index = change count, value = best arrival among kept
@@ -476,9 +484,10 @@ export const planTravels = (
     const changes = changesOf(c)
     let minArr = Infinity
     for (let k = 0; k <= changes; k++) minArr = Math.min(minArr, minArrByChanges[k] ?? Infinity)
-    if (c.arrTs < minArr) {
+    const keepSlowDirect = changes === 0 && !options.hideSlowTrains
+    if (c.arrTs < minArr || keepSlowDirect) {
       kept.push(c)
-      minArrByChanges[changes] = c.arrTs
+      minArrByChanges[changes] = Math.min(minArrByChanges[changes] ?? Infinity, c.arrTs)
     }
   }
 
@@ -494,6 +503,7 @@ export const searchTrain = async (
   date: string,
   _hour: string,
   _scheduleType: ScheduleType = "ByDeparture",
+  options: PlanOptions = {},
 ): Promise<RailApiGetRoutesResult> => {
   const feed = await getActiveFeed()
   if (!feed) {
@@ -530,7 +540,7 @@ export const searchTrain = async (
 
   // Scheduled platforms are baked into stop_times.platform_code at ingest, so the
   // response already carries them (loadDayTrips reads them) — no per-request API call.
-  return { result: { travels: planTravels(allTrips, fromStation, toStation, queryTs, endTs, realtime) } }
+  return { result: { travels: planTravels(allTrips, fromStation, toStation, queryTs, endTs, realtime, options) } }
 }
 
 export { invalidateDayCacheForFeed, loadDayTrips }

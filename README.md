@@ -43,6 +43,14 @@ anymore: the announcements / popup messages / station info endpoints that used
 to proxy upstream are retired and answer with an empty legacy envelope, so
 shipped clients render "no data" instead of erroring.
 
+**Slow trains:** the planner lists every direct train by default, like the legacy
+API did — a slow "collector" service is shown even when a faster direct train
+departs a few minutes later and arrives earlier (e.g. Ashkelon 230 07:00→07:56
+next to 622 07:06→07:50). The app's "hide slow trains" toggle is sent as
+`hideSlowTrains: true` in the search request body, and only then are such
+dominated direct trains left out. Itineraries *with* changes are always pruned
+when a same-or-fewer-changes option departs later and arrives earlier.
+
 **Platforms:** GTFS has no train→platform link (rail `stop_times` reference
 station-level stops with an empty `platform_code`). The scheduled platforms are
 **learned from SIRI**: every poll cycle the poller upserts the platform it
