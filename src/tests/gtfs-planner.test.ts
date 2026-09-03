@@ -30,16 +30,16 @@ describe("planTravels", () => {
     expect(travels[0].trains[0].stopStations.map((s: { stationId: number }) => s.stationId)).toEqual([3500])
     // routeStations is the full physical run including endpoints
     expect(travels[0].trains[0].routeStations.map((s: { stationId: number }) => s.stationId)).toEqual([3700, 3500, 3400])
-    // routeStations.arrivalTime is a bare "HH:mm" string (like the legacy API), not full ISO
+    // routeStations.arrivalTime is a bare "HH:mm" string, not full ISO
     expect(travels[0].trains[0].routeStations.map((s: { arrivalTime: string }) => s.arrivalTime)).toEqual(["08:00", "08:20", "08:35"])
     expect(travels[0].trains[0].departureTime).toBe("2026-06-27T08:00:00")
     expect(travels[0].trains[0].destPlatform).toBe(1)
     expect(travels[0].trains[0].trainPosition.calcDiffMinutes).toBe(0)
   })
 
-  it("shows the boarding station's arrival_time as the departure (Israel Railways platform dwell)", () => {
-    // Hadera West: the train arrives 09:10, dwells, departs 09:12. The legacy
-    // rail.co.il API surfaced 09:10 (the platform/arrival time), so we must too.
+  it("shows the boarding station's arrival_time as the departure (platform dwell)", () => {
+    // Hadera West: the train arrives 09:10, dwells, departs 09:12. The platform
+    // time a rider goes by is 09:10, so that is what we surface.
     const dwellTrip: TripData = {
       tripKey: `${DATE}#dwell`,
       trainNumber: 500,
@@ -111,27 +111,58 @@ describe("planTravels", () => {
       trip("comfy", 21, [[2300, "08:50", 1], [999, "09:20", 1]]), // 20-min change, arrives 09:20
     )
     const travels = planTravels(trips, 900, 999, ts("07:00"))
-    // a >=5-min change waits only 20 min (<=30) -> take it, even though the 4-min arrives earlier
+    // the tight change saves exactly 20 min, which is not *more* than the bar -> keep the safe one
     expect(travels[0].trains.map((t: any) => t.trainNumber)).toEqual([10, 21])
     expect(travels[0].arrivalTime).toBe("2026-06-27T09:20:00")
   })
 
-  it("drops to a 4-min change when the 5-min option would wait over 30 min", () => {
-    const trips = table(
-      trip("f1", 10, [[900, "08:00", 1], [2300, "08:30", 1]]),
-      trip("tight", 20, [[2300, "08:34", 1], [999, "09:00", 1]]), // 4-min change, arrives 09:00
-      trip("late", 21, [[2300, "09:05", 1], [999, "09:35", 1]]), // 35-min change (>30)
+  it("takes a four-minute change only when it actually saves the rider time", () => {
+    const first = trip("f1", 10, [[900, "08:00", 1], [3600, "08:30", 1]])
+    const numbers = (trips: DayTrips) => planTravels(trips, 900, 999, ts("07:00"))[0]?.trains.map((t: any) => t.trainNumber)
+
+    // The five-minute change gets there only five minutes later — not worth a
+    // connection you can miss, so the safe one wins.
+    const marginal = table(
+      first,
+      trip("tight", 20, [[3600, "08:34", 1], [999, "09:00", 1]]), // 4 min
+      trip("safe", 30, [[3600, "08:35", 1], [999, "09:05", 1]]), // 5 min
     )
-    const travels = planTravels(trips, 900, 999, ts("07:00"))
-    // the only >=5-min change waits 35 min -> drop to the 4-min change to avoid it
-    expect(travels[0].trains.map((t: any) => t.trainNumber)).toEqual([10, 20])
-    expect(travels[0].arrivalTime).toBe("2026-06-27T09:00:00")
+    expect(numbers(marginal)).toEqual([10, 30])
+
+    // Same tight change, but now the safe alternative lands 40 minutes later.
+    const worthIt = table(
+      first,
+      trip("tight", 20, [[3600, "08:34", 1], [999, "09:00", 1]]),
+      trip("safe", 30, [[3600, "08:35", 1], [999, "09:40", 1]]),
+    )
+    expect(numbers(worthIt)).toEqual([10, 20])
+
+    // And when it is the only connection there is, it is offered.
+    const onlyOption = table(first, trip("tight", 20, [[3600, "08:34", 1], [999, "09:00", 1]]))
+    expect(numbers(onlyOption)).toEqual([10, 20])
+  })
+
+  it("accepts a long wait when nothing shorter connects, and drops it when something does", () => {
+    // A 55-min wait is long but under the ceiling, and it is the only way through.
+    const onlyOption = table(
+      trip("a", 200, [[3700, "08:00", 1], [2300, "08:40", 2]]),
+      trip("b", 201, [[2300, "09:35", 5], [1300, "10:05", 1]]), // 55 min later
+    )
+    expect(planTravels(onlyOption, 3700, 1300, ts("07:00"))[0].trains.map((t: any) => t.trainNumber)).toEqual([200, 201])
+
+    // Add a connection that arrives sooner and the long layover is not offered.
+    const hasShorter = table(
+      trip("a", 200, [[3700, "08:00", 1], [2300, "08:40", 2]]),
+      trip("b", 201, [[2300, "09:35", 5], [1300, "10:05", 1]]),
+      trip("c", 202, [[2300, "09:00", 5], [1300, "09:40", 1]]), // 20-min change
+    )
+    expect(planTravels(hasShorter, 3700, 1300, ts("07:00"))[0].trains.map((t: any) => t.trainNumber)).toEqual([200, 202])
   })
 
   it("rejects a transfer that requires waiting more than an hour", () => {
     const trips = table(
       trip("a", 200, [[3700, "08:00", 1], [2300, "08:40", 2]]),
-      // only onward train departs 80 min after arrival -> over the 1h cap -> dropped
+      // only onward train departs 80 min after arrival -> over the 70-min cap -> dropped
       trip("b", 201, [[2300, "10:00", 5], [1300, "10:30", 1]]),
     )
     expect(planTravels(trips, 3700, 1300, ts("07:00"))).toHaveLength(0)
@@ -153,15 +184,53 @@ describe("planTravels", () => {
     expect(travels.map((t: any) => t.trains[0].trainNumber)).toEqual([10])
   })
 
-  it("drops a route that leaves earlier but arrives much later than another", () => {
+  it("lists a route a later departure beats only narrowly, dropping it with hideSlowTrains", () => {
+    // Real case: Hod HaSharon -> Savidor. The 20:58 change lands 21:41, four
+    // minutes after the 21:02 direct gets in — still a real option, so it stays.
     const trips = table(
-      trip("slowA", 1, [[3700, "04:51", 1], [2300, "05:30", 2]]), // 1-change leg 1…
-      trip("slowB", 2, [[2300, "05:40", 5], [3400, "06:19", 1]]), // …arrives 06:19
+      trip("legA", 1, [[3700, "04:51", 1], [2300, "05:20", 2]]),
+      trip("legB", 2, [[2300, "05:30", 5], [3400, "05:46", 1]]), // arrives 05:46
       trip("fast", 3, [[3700, "04:55", 1], [3400, "05:42", 1]]), // direct, arrives 05:42
     )
-    const travels = planTravels(trips, 3700, 3400, ts("03:00"))
-    // 04:55->05:42 dominates 04:51->06:19 (departs later, arrives earlier) -> drop the 04:51
-    expect(travels.map((t: any) => t.trains[0].trainNumber)).toEqual([3])
+    const first = (travels: any[]) => travels.map((t) => t.trains[0].trainNumber)
+    expect(first(planTravels(trips, 3700, 3400, ts("03:00")))).toEqual([1, 3])
+    const hidden = planTravels(trips, 3700, 3400, ts("03:00"), Infinity, undefined, { hideSlowTrains: true })
+    expect(first(hidden)).toEqual([3])
+  })
+
+  it("never rides to another station to board a train that calls at the origin", () => {
+    // Real case: TLV HaShalom -> Atlit. Riding one stop to Savidor to catch train
+    // 154 is pointless — 154 stops at HaShalom four minutes later. Only the plain
+    // boarding is offered, not the eight ways of meeting the same train.
+    const trips = table(
+      trip("hop", 306, [[4600, "07:05", 1], [3700, "07:08", 2]]),
+      trip("main", 154, [[4600, "07:21", 3], [3700, "07:28", 1], [2500, "08:14", 2]]),
+    )
+    const travels = planTravels(trips, 4600, 2500, ts("06:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[154]])
+  })
+
+  it("also refuses to ride backwards to meet a train that passes the origin", () => {
+    // Real case: TLV HaShalom -> HaHagana. Riding north to Savidor to catch the
+    // southbound 21 is pointless — it calls at HaShalom three minutes later and
+    // reaches HaHagana at the same 07:20 either way.
+    const trips = table(
+      trip("north", 306, [[4600, "07:05", 1], [3700, "07:08", 2]]),
+      trip("south", 21, [[3700, "07:12", 3], [4600, "07:15", 1], [4900, "07:20", 2]]),
+    )
+    const travels = planTravels(trips, 4600, 4900, ts("06:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[21]])
+  })
+
+  it("keeps a change-route a direct train beats, when it is still a real option", () => {
+    // Real case: Hod HaSharon -> Savidor, where the 20:58 change (arriving 21:41)
+    // stays listed next to the 21:02 direct that gets in at 21:37.
+    const trips = table(
+      trip("legA", 1, [[3700, "04:51", 1], [2300, "05:30", 2]]),
+      trip("legB", 2, [[2300, "05:40", 5], [3400, "06:19", 1]]), // arrives 06:19
+      trip("fast", 3, [[3700, "04:55", 1], [3400, "05:42", 1]]), // direct, arrives 05:42
+    )
+    expect(planTravels(trips, 3700, 3400, ts("03:00")).map((t: any) => t.trains[0].trainNumber)).toEqual([1, 3])
   })
 
   it("keeps a direct train even when a later departure with a change arrives sooner", () => {
@@ -177,9 +246,9 @@ describe("planTravels", () => {
     expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[647], [644, 749]])
   })
 
-  it("lists a direct train shadowed by a faster direct train unless slow trains are hidden", () => {
-    // Real case: Ashkelon -> TLV HaShalom. Train 230 (07:00 -> 07:56) is dominated by
-    // 622 (07:06 -> 07:50); only the "hide slow trains" toggle should drop it.
+  it("keeps a direct train only slightly slower than a faster direct, even with hideSlowTrains", () => {
+    // Real case: Ashkelon -> TLV HaShalom. Train 230 (07:00 -> 07:56) is beaten by
+    // 622 (07:06 -> 07:50), but by 6 minutes — not enough to be worth withholding.
     const trips = table(
       trip("slow", 230, [[5900, "07:00", 1], [4600, "07:56", 2]]),
       trip("fast", 622, [[5900, "07:06", 1], [4600, "07:50", 3]]),
@@ -188,6 +257,21 @@ describe("planTravels", () => {
     const numbers = (travels: any[]) => travels.map((t) => t.trains[0].trainNumber)
     expect(numbers(planTravels(trips, 5900, 4600, ts("06:00")))).toEqual([230, 622, 232])
     const hidden = planTravels(trips, 5900, 4600, ts("06:00"), Infinity, undefined, { hideSlowTrains: true })
+    expect(numbers(hidden)).toEqual([230, 622, 232])
+  })
+
+  it("hides a direct train a faster direct beats by well over the direct allowance", () => {
+    // Same shape, but 230 now trails by 40 min — far past what a rider would spend
+    // to stay on one train, so the toggle drops it.
+    const trips = table(
+      trip("slow", 230, [[5900, "07:00", 1], [4600, "08:30", 2]]),
+      trip("fast", 622, [[5900, "07:06", 1], [4600, "07:50", 3]]),
+      trip("next", 232, [[5900, "07:30", 1], [4600, "09:10", 2]]),
+    )
+    const numbers = (travels: any[]) => travels.map((t) => t.trains[0].trainNumber)
+    expect(numbers(planTravels(trips, 5900, 4600, ts("06:00")))).toEqual([230, 622, 232])
+    const hidden = planTravels(trips, 5900, 4600, ts("06:00"), Infinity, undefined, { hideSlowTrains: true })
+    // 232 leaves latest, so nothing supersedes it; only the beaten 230 goes.
     expect(numbers(hidden)).toEqual([622, 232])
   })
 
@@ -238,25 +322,28 @@ describe("planTravels", () => {
     expect(travels.map((t: any) => t.trains[0].trainNumber)).toEqual([100, 200])
   })
 
-  it("still lets a direct train dominate an itinerary with changes when slow trains are shown", () => {
+  it("never lets a direct train hide a competitive itinerary with changes", () => {
     const trips = table(
-      trip("slowA", 1, [[3700, "04:51", 1], [2300, "05:30", 2]]), // 1-change leg 1…
-      trip("slowB", 2, [[2300, "05:40", 5], [3400, "06:19", 1]]), // …arrives 06:19
+      trip("legA", 1, [[3700, "04:51", 1], [2300, "05:20", 2]]), // 1-change leg 1…
+      trip("legB", 2, [[2300, "05:30", 5], [3400, "05:46", 1]]), // …arrives 05:46
       trip("fast", 3, [[3700, "04:55", 1], [3400, "05:42", 1]]), // direct, arrives 05:42
     )
     const travels = planTravels(trips, 3700, 3400, ts("03:00"), Infinity, undefined, { hideSlowTrains: false })
-    // only 0-change itineraries are exempt from dominance pruning
-    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[3]])
+    // Explicitly off: the direct arriving 4 min sooner takes nothing off the list.
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[1, 2], [3]])
   })
 
-  it("drops itineraries dominated by a shorter route with the same arrival", () => {
+  it("lists both trains that arrive together, collapsing them only with hideSlowTrains", () => {
+    // Real case: TLV HaShalom -> Savidor, where several trains a few minutes apart
+    // land on the same minute. Both are boardable, so both have to be listed.
     const trips = table(
       trip("a", 100, [[3700, "08:00", 1], [3400, "09:00", 1]]),
       trip("b", 101, [[3700, "08:30", 1], [3400, "09:00", 1]]), // same arrival, later departure
     )
-    const travels = planTravels(trips, 3700, 3400, ts("07:00"))
-    // only the shorter (later-departing) route survives
-    expect(travels.map((t: any) => t.trains[0].trainNumber)).toEqual([101])
+    const first = (travels: any[]) => travels.map((t) => t.trains[0].trainNumber)
+    expect(first(planTravels(trips, 3700, 3400, ts("07:00")))).toEqual([100, 101])
+    const hidden = planTravels(trips, 3700, 3400, ts("07:00"), Infinity, undefined, { hideSlowTrains: true })
+    expect(first(hidden)).toEqual([101])
   })
 
   it("prefers fewer changes when arrival is the same and the penalty is under 20 min", () => {
@@ -265,7 +352,7 @@ describe("planTravels", () => {
       trip("legA", 200, [[3700, "08:25", 1], [2300, "08:40", 2]]), // 1-change, 35 min total…
       trip("legB", 201, [[2300, "08:50", 5], [3400, "09:00", 1]]), // …same 09:00 arrival
     )
-    const travels = planTravels(trips, 3700, 3400, ts("07:00"))
+    const travels = planTravels(trips, 3700, 3400, ts("07:00"), Infinity, undefined, { hideSlowTrains: true })
     // both arrive 09:00; the direct is only 15 min longer -> prefer it (0 changes)
     expect(travels).toHaveLength(1)
     expect(travels[0].trains.map((t: any) => t.trainNumber)).toEqual([100])
@@ -277,7 +364,7 @@ describe("planTravels", () => {
       trip("legA", 200, [[3700, "08:35", 1], [2300, "08:45", 2]]), // 1-change, 25 min total…
       trip("legB", 201, [[2300, "08:50", 5], [3400, "09:00", 1]]), // …same 09:00 arrival
     )
-    const travels = planTravels(trips, 3700, 3400, ts("07:00"))
+    const travels = planTravels(trips, 3700, 3400, ts("07:00"), Infinity, undefined, { hideSlowTrains: true })
     // direct is 35 min longer than the 25-min 1-change -> keep the shorter (1-change)
     expect(travels).toHaveLength(1)
     expect(travels[0].trains.map((t: any) => t.trainNumber)).toEqual([200, 201])
@@ -430,9 +517,9 @@ describe("planTravels", () => {
 
     it("does a tight Tel Aviv change at Savidor", () => {
       const trips = table(
-        // shared TLV stations, all ~4 min (tight): University, Savidor, HaShalom
+        // shared TLV stations, all 5 min — at the floor, and still "tight": University, Savidor, HaShalom
         trip("f1", 10, [[900, "08:00", 1], [3600, "08:30", 1], [3700, "08:33", 1], [4600, "08:36", 1]]),
-        trip("f2", 20, [[3600, "08:34", 1], [3700, "08:37", 1], [4600, "08:40", 1], [999, "09:00", 1]]),
+        trip("f2", 20, [[3600, "08:35", 1], [3700, "08:38", 1], [4600, "08:41", 1], [999, "09:00", 1]]),
       )
       const travels = planTravels(trips, 900, 999, ts("07:00"))
       expect(changeStation(travels)).toBe(3700) // Savidor, not the earlier University (3600)
