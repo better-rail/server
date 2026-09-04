@@ -222,6 +222,38 @@ describe("planTravels", () => {
     expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[21]])
   })
 
+  it("refuses that ride even when the train comes back past the origin after midnight", () => {
+    // Real case: Hadera West -> Kiryat Motzkin, last departure of the night.
+    // Riding south to Netanya at 23:56 to meet train 7224 is pointless — it calls
+    // at Hadera West itself at 00:21 and reaches Binyamina at the same 00:32. The
+    // call falls past the end of the listed day, so it is never a first train
+    // here, but the plain boarding still heads the next day's page.
+    const trips = table(
+      trip("out", 7227, [[3100, "23:56", 1], [3300, "24:05", 2]]),
+      trip("back", 7224, [[3300, "24:12", 1], [3100, "24:21", 2], [2800, "24:32", 3]]),
+      trip("early", 7222, [[3100, "23:21", 1], [2800, "23:32", 2]]),
+      trip("north", 7156, [[2800, "23:40", 3], [1400, "24:32", 1]]),
+      trip("late", 7158, [[2800, "24:40", 3], [1400, "25:32", 1]]),
+    )
+    const travels = planTravels(trips, 3100, 1400, ts("00:00"), ts("24:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[7222, 7156]])
+  })
+
+  it("refuses that ride when only the optimised change takes the train past the origin", () => {
+    // The rule is applied after the change has been placed. Seeded at 23:52 the
+    // journey changes at 3300, ahead of the origin on train 289's run; moving the
+    // change to the roomier 2800 carries that leg back through 3100 at 00:21, and
+    // only then is the detour visible.
+    const trips = table(
+      trip("out", 900, [[3100, "23:52", 1], [3310, "24:00", 2]]),
+      trip("back", 289, [[3310, "24:10", 1], [3300, "24:20", 2], [3100, "24:21", 3], [2800, "24:35", 1]]),
+      trip("on", 950, [[3300, "24:30", 2], [2800, "24:50", 3], [1400, "25:30", 1]]),
+      trip("early", 902, [[3100, "23:10", 1], [1400, "24:40", 2]]),
+    )
+    const travels = planTravels(trips, 3100, 1400, ts("00:00"), ts("24:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[902]])
+  })
+
   it("drops a change-route a direct train beats by well over the margin", () => {
     // The direct leaves four minutes later and arrives 37 earlier with no change
     // at all — past the point where setting out sooner buys anything.

@@ -645,15 +645,18 @@ export const planLegs = (
   // train 154), or backwards, riding north to Savidor to catch a southbound
   // train that stops at HaShalom three minutes later.
   //
-  // Two conditions keep it honest, because the whole argument rests on that
-  // simpler boarding actually being offered:
-  //   - the origin call has to be inside the day we list, or it is never a first
-  //     train and no replacement exists. This is what silenced the last
-  //     connections of the night — Hadera-West -> Airport lost its 23:17 because
-  //     the replacement train calls at Hadera-West at 00:05 the next morning.
-  //   - it has to be soon after this departure. The real cases are a quarter of
-  //     an hour or so apart; telling someone to wait 46 minutes for the same
-  //     train is a different proposition, and both boardings deserve a listing.
+  // One condition keeps it honest: the call has to be soon after this departure.
+  // The real cases are a quarter of an hour or so apart; telling someone to wait
+  // 46 minutes for the same train is a different proposition, and both boardings
+  // deserve a listing.
+  //
+  // The call is *not* required to fall inside the day being listed. It reads as
+  // though it should be — a call past midnight is never a first train here, so
+  // this page loses the option — but the simpler boarding is still offered, on
+  // the next day's page, which the client loads as the rider scrolls. Requiring
+  // it in-day only kept the detour: the last train out of Hadera-West left at
+  // 23:56 towards Netanya to meet a train that calls at Hadera-West itself at
+  // 00:21, arriving no earlier for two changes instead of one.
   const ridesToCatchATrainThatComesHere = (legs: Leg[], depTs: number): boolean =>
     legs.slice(1).some((leg) => {
       const trip = allTrips.get(leg.tripKey)!
@@ -662,8 +665,7 @@ export const planLegs = (
           stop.railId === fromStation &&
           i < leg.alightIndex &&
           stop.depTs >= depTs &&
-          stop.depTs <= depTs + REDUNDANT_BOARDING_WINDOW_MS &&
-          stop.depTs <= endTs,
+          stop.depTs <= depTs + REDUNDANT_BOARDING_WINDOW_MS,
       )
     })
 
@@ -718,12 +720,19 @@ export const planLegs = (
       // train the rider never boards — which then fed the sort and the
       // same-arrival tiebreak.
       const board = allTrips.get(legs[0].tripKey)!.stops[legs[0].boardIndex]
-      if (ridesToCatchATrainThatComesHere(legs, board.depTs)) continue
       const key = legs.map((l) => allTrips.get(l.tripKey)!.trainNumber).join("-") + "@" + board.depTs
       if (seen.has(key)) continue
       seen.add(key)
 
       if (legs.length > 1) optimizeTransfers(allTrips, legs, limits)
+
+      // Tested once the change has been placed, not before: moving where the rider
+      // gets off carries the next leg further back up the line, so a journey can
+      // start doubling back only after the transfer is optimised (Ashdod-Ad Halom
+      // -> Be'er Sheva, riding out at 23:52 to meet train 289, which calls at
+      // Ashdod itself at 00:21).
+      if (ridesToCatchATrainThatComesHere(legs, board.depTs)) continue
+
       const lastLeg = legs[legs.length - 1]
       candidates.push({
         legs,
