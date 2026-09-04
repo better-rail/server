@@ -282,6 +282,56 @@ describe("planTravels", () => {
     expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[200, 202]])
   })
 
+  it("drops a journey that spends an hour and a half of it waiting", () => {
+    // Real case: Jerusalem -> Pa'ate Modi'in, a seventeen-minute trip. The 03:32
+    // waits 54 minutes at the airport and 42 more at Modi'in-Center to get in at
+    // 05:54; the 04:32 does the same trip with 54 minutes of waiting in all and
+    // lands at 06:13. Setting out an hour later to arrive nineteen minutes later
+    // gives the rider back forty-one minutes of the night.
+    const trips = table(
+      trip("early1", 706, [[680, "03:32", 3], [8600, "03:53", 2]]),
+      trip("early2", 5, [[8600, "04:47", 2], [400, "05:06", 1]]),
+      trip("early3", 152, [[400, "05:48", 1], [300, "05:54", 2]]),
+      trip("late1", 708, [[680, "04:32", 3], [8600, "04:53", 2]]),
+      trip("late2", 7, [[8600, "05:42", 2], [400, "06:01", 1]]),
+      trip("late3", 543, [[400, "06:06", 1], [300, "06:13", 2]]),
+    )
+    const travels = planTravels(trips, 680, 300, ts("00:00"), ts("24:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[708, 7, 543]])
+  })
+
+  it("keeps a long wait when it is the last way to make the trip", () => {
+    // Bet Shemesh -> Karmiel: the last train north waits an hour at HaHagana and
+    // forty minutes more at Haifa Center. Nothing leaves after it, so there is
+    // nothing to give the rider back and it stays.
+    const trips = table(
+      trip("a", 48, [[7300, "19:48", 1], [4900, "20:05", 2]]),
+      trip("b", 180, [[4900, "21:05", 2], [2100, "22:20", 3]]),
+      trip("c", 472, [[2100, "23:00", 3], [1840, "23:45", 1]]),
+    )
+    const travels = planTravels(trips, 7300, 1840, ts("00:00"), ts("24:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[48, 180, 472]])
+  })
+
+  it("keeps a long wait when waiting it out costs the rider hours", () => {
+    // Yokne'am -> Modi'in-Center: 98 minutes of the night spent on platforms to
+    // get in at 05:06, which is grim — but the next way to make that trip lands at
+    // 08:14, and three hours is the rider's call rather than ours. Half an hour is
+    // the whole of what this rule may cost anyone.
+    const trips = table(
+      trip("n1", 7067, [[1240, "00:16", 1], [2100, "00:34", 2]]),
+      trip("n2", 7158, [[2100, "01:12", 2], [1600, "01:51", 1]]),
+      trip("n3", 5, [[1600, "02:51", 1], [400, "05:06", 2]]),
+      trip("m1", 59, [[1240, "06:01", 1], [2100, "06:18", 2]]),
+      trip("m2", 103, [[2100, "06:25", 2], [400, "08:14", 1]]),
+    )
+    const travels = planTravels(trips, 1240, 400, ts("00:00"), ts("24:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([
+      [7067, 7158, 5],
+      [59, 103],
+    ])
+  })
+
   it("drops a change-route a direct train beats by well over the margin", () => {
     // The direct leaves four minutes later and arrives 37 earlier with no change
     // at all — past the point where setting out sooner buys anything.

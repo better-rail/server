@@ -101,6 +101,21 @@ const ABSURDLY_LONG_MARGIN_MS = 10 * 60 * 1000
 // that runs in daylight is both.
 const GROSS_DETOUR_RATIO = 3
 const ALL_NIGHT_MS = 4 * 60 * 60 * 1000
+// A single connection may run to MAX_CONNECTION_MS, but nothing bounded a journey
+// as a whole, so two changes could legally stack up over two hours of standing on
+// platforms. Past this much waiting a journey has to be worth it: Jerusalem ->
+// Pa'ate Modi'in at 03:32 is a seventeen-minute trip that spends 56 minutes at the
+// airport and 42 more at Modi'in-Center. Well clear of the longest wait any
+// daytime service asks for — Yavne-East -> Lehavim-Rahat changes at Be'er Sheva
+// with 62 minutes to wait, every hour of the afternoon.
+const LONG_TOTAL_WAIT_MS = 90 * 60 * 1000
+// ...and how much later the rider may be asked to arrive in exchange for being
+// spared it. Half an hour is the whole of what this rule may cost anyone. Without
+// a bound it also took the night rides that are the only way to arrive early at
+// all — Yokne'am -> Modi'in-Center leaves at 00:17 and gets in at 05:06, and the
+// next way to make that trip lands at 08:14. That one is grim, but it is the only
+// thing on offer for three hours, and that is the rider's call rather than ours.
+const WAIT_IT_OUT_MS = 30 * 60 * 1000
 // Among itineraries arriving at the same time, prefer fewer changes as long as the
 // fewer-change option is at most this much longer than the shortest one.
 const PREFER_FEWER_CHANGES_WINDOW_MS = 20 * 60 * 1000
@@ -835,6 +850,16 @@ export const planLegs = (
       return travelled > endToEnd * GROSS_DETOUR_RATIO
     }
 
+    const waiting = (c: Candidate): number => {
+      let total = 0
+      for (let i = 0; i < c.legs.length - 1; i++) {
+        const off = allTrips.get(c.legs[i].tripKey)!.stops[c.legs[i].alightIndex]
+        const on = allTrips.get(c.legs[i + 1].tripKey)!.stops[c.legs[i + 1].boardIndex]
+        total += on.depTs - off.arrTs
+      }
+      return total
+    }
+
     // How much changing is reasonable depends on what is actually running, and
     // that changes through the day: the express that makes the trip in one go
     // exists at rush hour and nowhere near midnight. So the standard is the
@@ -851,12 +876,17 @@ export const planLegs = (
     const shortest = Math.min(...candidates.map((c) => c.arrTs - c.depTs))
     const absurd = new Set<Candidate>()
     const coveredArrByChanges: number[] = []
+    const briskestAheadByChanges: number[] = []
     let quickestAhead = Infinity
     let quickestAheadChanges = 0
     for (const c of [...candidates].sort((a, b) => b.depTs - a.depTs || a.arrTs - b.arrTs)) {
       const changes = changesOf(c)
       let covered = Infinity
-      for (let k = 0; k <= changes; k++) covered = Math.min(covered, coveredArrByChanges[k] ?? Infinity)
+      let briskestAhead = Infinity
+      for (let k = 0; k <= changes; k++) {
+        covered = Math.min(covered, coveredArrByChanges[k] ?? Infinity)
+        briskestAhead = Math.min(briskestAhead, briskestAheadByChanges[k] ?? Infinity)
+      }
       const duration = c.arrTs - c.depTs
       const farTooLong = duration > shortest + ABSURDLY_LONG_MARGIN_MS && duration > shortest * ABSURDLY_LONG_RATIO
       // `candidates` is walked latest-departure first, so this running best is
@@ -874,6 +904,23 @@ export const planLegs = (
         absurd.add(c)
         continue
       }
+      // Spending an hour and a half on platforms is only worth it if the journey
+      // buys something with it. The comparison is against journeys leaving later,
+      // and it is the one place a survivor may land slightly after this one: what
+      // the rider gets back is counted across both ends, so setting out an hour
+      // later to arrive nineteen minutes later still gives back forty-one minutes
+      // of the night. Nothing leaving later at all means this is the last of them
+      // and it stays, which is what keeps the 19:49 out of Bet Shemesh — the last
+      // train north, 51 minutes of it waiting at Haifa Center.
+      if (
+        changes > 0 &&
+        waiting(c) > LONG_TOTAL_WAIT_MS &&
+        duration - briskestAhead >= WASTED_TIME_MS &&
+        covered - c.arrTs <= WAIT_IT_OUT_MS
+      ) {
+        absurd.add(c)
+        continue
+      }
       // The rest only when something else already covers the journey. Dimona to
       // Yokne'am at 10:17 needs three changes and there is no quicker way for six
       // hours — capping it would leave that rider waiting all afternoon.
@@ -882,6 +929,7 @@ export const planLegs = (
         continue
       }
       coveredArrByChanges[changes] = Math.min(coveredArrByChanges[changes] ?? Infinity, c.arrTs)
+      briskestAheadByChanges[changes] = Math.min(briskestAheadByChanges[changes] ?? Infinity, duration)
     }
     if (absurd.size > 0) candidates = candidates.filter((c) => !absurd.has(c))
 
