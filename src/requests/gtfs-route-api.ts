@@ -54,9 +54,6 @@ const PREFERRED_LIMITS: ConnectionLimits = { minAt: () => MIN_CONNECTION_MS, max
 const TIGHT_LIMITS: ConnectionLimits = { minAt: () => MIN_CONNECTION_RELAXED_MS, maxMs: MAX_CONNECTION_MS }
 // How much sooner the tight tier must land before its risk is worth taking.
 const RELAX_WHEN_SAVES_MS = 20 * 60 * 1000
-// How soon after a departure the same train has to call at the origin before
-// riding out to meet it counts as pointless rather than as a real alternative.
-const REDUNDANT_BOARDING_WINDOW_MS = 30 * 60 * 1000
 // How much sooner another journey has to get there before this one is giving up
 // real time for nothing. Under five minutes is left alone: setting out a little
 // earlier to arrive a little later is a trade some riders make, and both options
@@ -64,6 +61,9 @@ const REDUNDANT_BOARDING_WINDOW_MS = 30 * 60 * 1000
 // Lod at 06:08 changing at HaHagana, against the 06:20 that changes at Herzliya
 // and still gets in eight minutes sooner.
 const CLEARLY_BETTER_MS = 5 * 60 * 1000
+// How soon after a departure the same train has to call at the origin before
+// riding out to meet it counts as pointless rather than as a real alternative.
+const REDUNDANT_BOARDING_WINDOW_MS = 30 * 60 * 1000
 // How much of a rider's day another journey has to save before this one stops
 // being a choice. Counts both ends of it: the extra wait at the origin and the
 // later arrival. Waiting 27 minutes to get in 4 minutes sooner is 31 minutes
@@ -98,8 +98,9 @@ const PREFER_FEWER_CHANGES_WINDOW_MS = 20 * 60 * 1000
 const CATCH_UP_WAIT_MS = 60 * 60 * 1000
 const CATCH_UP_ARRIVAL_TOLERANCE_MS = 15 * 60 * 1000
 // ...but a direct train trailing the best itinerary by no more than this stays
-// listed even so — not changing trains is worth a few minutes to most riders.
-const KEEP_DIRECT_WITHIN_MS = 15 * 60 * 1000
+// listed even so. It matches the margin the default view uses, so the toggle can
+// only ever show less than the plain list, never more.
+const KEEP_DIRECT_WITHIN_MS = CLEARLY_BETTER_MS
 // Three changes is enough to reach the far north and south; beyond that a journey
 // stops being one anybody would make.
 const MAX_ONWARD_ROUNDS = 3 // first train + 3 onward trips => up to 3 transfers
@@ -662,16 +663,42 @@ export const planTravels = (
         return (toDestination !== null && toDestination > endToEnd) || (fromOrigin !== null && fromOrigin > endToEnd)
       })
 
+    // How much changing is reasonable depends on what is actually running, and
+    // that changes through the day: the express that makes the trip in one go
+    // exists at rush hour and nowhere near midnight. So the standard is the
+    // quickest journey still to come from this departure onwards, never the
+    // quickest of the whole day — otherwise the morning express would rule out
+    // the only three-change route anybody can take at eleven at night.
+    //
+    // Against that standard, one change more is a fair price for leaving at a
+    // different time; two more is not. Where the quickest way itself needs three,
+    // three is what the trip costs and the cap follows it.
+    const capFor = (quickestChanges: number) =>
+      quickestChanges >= 3 ? quickestChanges : Math.min(quickestChanges + 1, 2)
+
     const shortest = Math.min(...candidates.map((c) => c.arrTs - c.depTs))
     const absurd = new Set<Candidate>()
     const coveredArrByChanges: number[] = []
+    let quickestAhead = Infinity
+    let quickestAheadChanges = 0
     for (const c of [...candidates].sort((a, b) => b.depTs - a.depTs || a.arrTs - b.arrTs)) {
       const changes = changesOf(c)
       let covered = Infinity
       for (let k = 0; k <= changes; k++) covered = Math.min(covered, coveredArrByChanges[k] ?? Infinity)
       const duration = c.arrTs - c.depTs
       const farTooLong = duration > shortest + ABSURDLY_LONG_MARGIN_MS && duration > shortest * ABSURDLY_LONG_RATIO
-      if (changes > 0 && farTooLong && covered <= c.arrTs) {
+      // `candidates` is walked latest-departure first, so this running best is
+      // exactly "the quickest thing still leaving at or after this one", with the
+      // candidate itself included — a journey that is the quickest available can
+      // never be capped away.
+      if (duration < quickestAhead) {
+        quickestAhead = duration
+        quickestAheadChanges = changes
+      }
+      // Only when something else already covers the journey. Dimona to Yokne'am at
+      // 10:17 needs three changes and there is no quicker way for six hours —
+      // capping it would leave that rider waiting all afternoon.
+      if (changes > 0 && (farTooLong || changes > capFor(quickestAheadChanges)) && covered <= c.arrTs) {
         absurd.add(c)
         continue
       }
@@ -739,14 +766,24 @@ export const planTravels = (
       changesOf(other) <= changesOf(c) &&
       other.depTs >= c.depTs &&
       other.arrTs <= c.arrTs &&
+      // Getting there meaningfully sooner settles it for any journey, direct
+      // trains included: the stopping service at :08 has nothing to offer while
+      // the express at :15 is running, since the express leaves later and still
+      // gets in first. Off-peak, when no express follows, the :08 is the best
+      // there is and stays — which falls out of comparing only against what
+      // actually departs after it.
       (other.arrTs <= c.arrTs - CLEARLY_BETTER_MS ||
-        c.arrTs - c.depTs - (other.arrTs - other.depTs) >=
-          (leavesTheCorridor(c) ? DETOUR_WASTED_TIME_MS : WASTED_TIME_MS))
+        // Wasted time only judges journeys with a change in them. Two direct
+        // trains landing together are two real options — one may be quieter, or
+        // simply the one you can make — and neither is noise.
+        (changesOf(c) > 0 &&
+          c.arrTs - c.depTs - (other.arrTs - other.depTs) >=
+            (leavesTheCorridor(c) ? DETOUR_WASTED_TIME_MS : WASTED_TIME_MS)))
 
     const outclassed = new Set<Candidate>()
     const survivors: Candidate[] = []
     for (const c of [...listed].sort((a, b) => b.depTs - a.depTs || a.arrTs - b.arrTs)) {
-      if (changesOf(c) > 0 && survivors.some((other) => beatenBy(c, other))) {
+      if (survivors.some((other) => beatenBy(c, other))) {
         outclassed.add(c)
         continue
       }
@@ -754,9 +791,11 @@ export const planTravels = (
     }
 
     const worthwhile = listed.filter((c) => {
-      const changes = changesOf(c)
-      if (changes === 0) return true
       if (outclassed.has(c)) return false
+      const changes = changesOf(c)
+      // A direct train is never collapsed away for landing on the same minute as
+      // something else — two of them arriving together are two real options.
+      if (changes === 0) return true
       return !atArrival.get(c.arrTs)!.some((other) => changesOf(other) < changes && other.depTs >= c.depTs)
     })
 

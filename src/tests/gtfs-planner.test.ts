@@ -246,11 +246,11 @@ describe("planTravels", () => {
     expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[647], [644, 749]])
   })
 
-  it("keeps a direct train only slightly slower than a faster direct, even with hideSlowTrains", () => {
-    // Real case: Ashkelon -> TLV HaShalom. Train 230 (07:00 -> 07:56) is beaten by
-    // 622 (07:06 -> 07:50), but by 6 minutes — not enough to be worth withholding.
+  it("keeps a direct train a faster one beats only narrowly", () => {
+    // Ashkelon -> TLV HaShalom. Train 230 (07:00 -> 07:53) is beaten by 622
+    // (07:06 -> 07:50), but by three minutes — inside the margin, so both stand.
     const trips = table(
-      trip("slow", 230, [[5900, "07:00", 1], [4600, "07:56", 2]]),
+      trip("slow", 230, [[5900, "07:00", 1], [4600, "07:53", 2]]),
       trip("fast", 622, [[5900, "07:06", 1], [4600, "07:50", 3]]),
       trip("next", 232, [[5900, "07:30", 1], [4600, "08:26", 2]]),
     )
@@ -260,19 +260,21 @@ describe("planTravels", () => {
     expect(numbers(hidden)).toEqual([230, 622, 232])
   })
 
-  it("hides a direct train a faster direct beats by well over the direct allowance", () => {
-    // Same shape, but 230 now trails by 40 min — far past what a rider would spend
-    // to stay on one train, so the toggle drops it.
+  it("hides a stopping train while a later express still gets in first", () => {
+    // The :08 stopping service has nothing to offer against the :15 express: the
+    // express leaves after it and arrives before it. Off-peak, with no express
+    // behind it, the same stopping train is the best there is and stays.
     const trips = table(
-      trip("slow", 230, [[5900, "07:00", 1], [4600, "08:30", 2]]),
-      trip("fast", 622, [[5900, "07:06", 1], [4600, "07:50", 3]]),
-      trip("next", 232, [[5900, "07:30", 1], [4600, "09:10", 2]]),
+      trip("stop1", 808, [[3700, "08:08", 1], [3400, "08:40", 1]]),
+      trip("exp1", 815, [[3700, "08:15", 1], [3400, "08:30", 1]]),
+      trip("stop2", 828, [[3700, "08:28", 1], [3400, "09:00", 1]]),
+      trip("stop3", 1008, [[3700, "10:08", 1], [3400, "10:40", 1]]),
+      trip("stop4", 1108, [[3700, "11:08", 1], [3400, "11:40", 1]]),
     )
-    const numbers = (travels: any[]) => travels.map((t) => t.trains[0].trainNumber)
-    expect(numbers(planTravels(trips, 5900, 4600, ts("06:00")))).toEqual([230, 622, 232])
-    const hidden = planTravels(trips, 5900, 4600, ts("06:00"), Infinity, undefined, { hideSlowTrains: true })
-    // 232 leaves latest, so nothing supersedes it; only the beaten 230 goes.
-    expect(numbers(hidden)).toEqual([622, 232])
+    const travels = planTravels(trips, 3700, 3400, ts("07:00"))
+    // 08:08 goes; 08:28 stays (nothing after it arrives sooner), and so do the
+    // off-peak departures with no express to beat them.
+    expect(travels.map((t: any) => t.trains[0].trainNumber)).toEqual([815, 828, 1008, 1108])
   })
 
   it("hides a route a later departure catches up with (hide slow trains)", () => {
@@ -509,6 +511,32 @@ describe("planTravels", () => {
     )
     const travels = planTravels(trips, 5000, 9000, ts("18:00"))
     expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[269, 672], [46, 665]])
+  })
+
+  it("caps changes at one more than the quickest way to make the trip", () => {
+    // A direct train exists, so a two-change itinerary is past what the trip is
+    // worth — however it is timed. One change stays.
+    const trips = table(
+      trip("fast", 100, [[3700, "09:00", 1], [3400, "09:30", 1]]), // direct, the quickest
+      trip("oneA", 200, [[3700, "08:40", 1], [3500, "08:50", 2]]), // 1 change…
+      trip("oneB", 201, [[3500, "08:58", 5], [3400, "09:28", 1]]), // …arrives 09:28
+      trip("twoA", 300, [[3700, "08:00", 1], [3500, "08:10", 2]]), // 2 changes…
+      trip("twoB", 301, [[3500, "08:20", 5], [3600, "08:30", 1]]),
+      trip("twoC", 302, [[3600, "08:40", 3], [3400, "09:32", 1]]), // …arrives 09:32, last of the three
+    )
+    const travels = planTravels(trips, 3700, 3400, ts("07:00"))
+    expect(travels.map((t: any) => t.trains.length - 1)).toEqual([1, 0])
+  })
+
+  it("keeps the deeper itinerary when the trip genuinely needs it", () => {
+    // Nothing simpler reaches the destination, so the cap follows the timetable.
+    const trips = table(
+      trip("a", 300, [[3700, "08:00", 1], [3500, "08:10", 2]]),
+      trip("b", 301, [[3500, "08:20", 5], [3600, "08:30", 1]]),
+      trip("c", 302, [[3600, "08:40", 3], [3400, "09:26", 1]]),
+    )
+    const travels = planTravels(trips, 3700, 3400, ts("07:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[300, 301, 302]])
   })
 
   it("does not split a direct train into a transfer that saves nothing", () => {
