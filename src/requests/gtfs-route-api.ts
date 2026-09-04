@@ -64,6 +64,13 @@ const REDUNDANT_BOARDING_WINDOW_MS = 30 * 60 * 1000
 // Lod at 06:08 changing at HaHagana, against the 06:20 that changes at Herzliya
 // and still gets in eight minutes sooner.
 const CLEARLY_BETTER_MS = 5 * 60 * 1000
+// How much of a rider's day another journey has to save before this one stops
+// being a choice. Counts both ends of it: the extra wait at the origin and the
+// later arrival. Waiting 27 minutes to get in 4 minutes sooner is 31 minutes
+// spent on nothing, whereas two minutes for two minutes is a real preference —
+// there are reasons to take a train beyond when it lands, a quieter one among
+// them.
+const WASTED_TIME_MS = 10 * 60 * 1000
 // An itinerary this much longer than the best way to make the same trip has
 // stopped being a slower option and become a wrong answer: riding one stop up the
 // line to sit 34 minutes and catch the train that would have collected you anyway,
@@ -699,26 +706,36 @@ export const planTravels = (
       if (group) group.push(c)
       else atArrival.set(c.arrTs, [c])
     }
-    // And drop one that something else beats outright by a real margin: leaving no
-    // earlier, changing no more often, and getting there at least a quarter of an
-    // hour sooner. Netanya-Sapir -> Holon-Wolfson is the shape — a 06:26 with three
-    // changes arriving 07:38, next to a 06:32 with two arriving 07:23. Later out,
-    // sooner in, one change fewer. Walk latest-departure first so everything
-    // already seen departs no earlier, and only compare against journeys that
-    // survived, so nothing is dropped in favour of something itself dropped.
+    // And drop one that something else beats outright. The survivor has to leave
+    // no earlier, change no more often and arrive no later; on top of that it has
+    // to be better in a way a rider would feel — either it gets there
+    // CLEARLY_BETTER_MS sooner, or it gives back WASTED_TIME_MS of the day once
+    // the extra wait at the origin is counted alongside the later arrival.
+    //
+    // The second is what catches Ra'anana West -> Lod: 27 minutes of waiting to
+    // arrive 4 minutes sooner. The first catches a journey that simply lands well
+    // behind. Neither touches the small trades, which are worth listing.
+    //
+    // Direct trains are exempt, and a journey is only ever measured against ones
+    // with no more changes than itself, so a change-route can never displace a
+    // simpler one. Walk latest-departure first so everything already seen departs
+    // no earlier, and compare only against survivors, so nothing is dropped in
+    // favour of something itself dropped.
+    const beatenBy = (c: Candidate, other: Candidate) =>
+      changesOf(other) <= changesOf(c) &&
+      other.depTs >= c.depTs &&
+      other.arrTs <= c.arrTs &&
+      (other.arrTs <= c.arrTs - CLEARLY_BETTER_MS ||
+        c.arrTs - c.depTs - (other.arrTs - other.depTs) >= WASTED_TIME_MS)
+
     const outclassed = new Set<Candidate>()
-    const bestArrByChanges: number[] = []
+    const survivors: Candidate[] = []
     for (const c of [...listed].sort((a, b) => b.depTs - a.depTs || a.arrTs - b.arrTs)) {
-      const changes = changesOf(c)
-      if (changes > 0) {
-        let best = Infinity
-        for (let k = 0; k <= changes; k++) best = Math.min(best, bestArrByChanges[k] ?? Infinity)
-        if (best <= c.arrTs - CLEARLY_BETTER_MS) {
-          outclassed.add(c)
-          continue
-        }
+      if (changesOf(c) > 0 && survivors.some((other) => beatenBy(c, other))) {
+        outclassed.add(c)
+        continue
       }
-      bestArrByChanges[changes] = Math.min(bestArrByChanges[changes] ?? Infinity, c.arrTs)
+      survivors.push(c)
     }
 
     const worthwhile = listed.filter((c) => {

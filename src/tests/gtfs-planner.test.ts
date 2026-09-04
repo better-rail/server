@@ -485,6 +485,32 @@ describe("planTravels", () => {
     expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[638, 512], [640]])
   })
 
+  it("drops a route whose alternative gives back ten minutes of the day", () => {
+    // Real case: waiting 27 minutes to arrive 4 minutes sooner is 31 minutes spent
+    // on nothing, so the earlier departure is not a choice anybody makes — even
+    // though it lands only 4 minutes behind, inside the arrival margin.
+    const trips = table(
+      trip("slowA", 303, [[2940, "06:08", 1], [4900, "07:00", 2]]),
+      trip("slowB", 223, [[4900, "07:05", 5], [5000, "07:23", 1]]), // arrives 07:23
+      trip("quick", 300, [[2940, "06:35", 1], [5000, "07:19", 2]]), // 27 min later, 4 min sooner
+    )
+    const travels = planTravels(trips, 2940, 5000, ts("05:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[300]])
+  })
+
+  it("keeps a small trade of waiting against arrival", () => {
+    // Two minutes of waiting for two minutes of arrival is a real preference —
+    // there are reasons to pick a train beyond when it lands.
+    const trips = table(
+      trip("legA", 269, [[5000, "18:49", 1], [5800, "19:20", 2]]),
+      trip("legB", 672, [[5800, "19:28", 5], [9000, "19:44", 1]]), // arrives 19:44
+      trip("other", 46, [[5000, "18:51", 1], [4900, "19:05", 2]]),
+      trip("onward", 665, [[4900, "19:15", 3], [9000, "19:43", 1]]), // 2 min later, 1 min sooner
+    )
+    const travels = planTravels(trips, 5000, 9000, ts("18:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[269, 672], [46, 665]])
+  })
+
   it("does not split a direct train into a transfer that saves nothing", () => {
     const trips = table(
       trip("a", 301, [[3700, "08:00", 1], [2300, "08:20", 2], [1300, "09:00", 1]]),
