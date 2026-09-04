@@ -59,17 +59,21 @@ const REDUNDANT_BOARDING_WINDOW_MS = 30 * 60 * 1000
 // How much sooner another journey has to get there before this one is giving up
 // real time for nothing. Small margins are left alone: leaving four minutes
 // earlier to arrive four minutes later is a trade some riders make, and the
-// options either side of it are both worth listing.
-const CLEARLY_BETTER_MS = 15 * 60 * 1000
+// options either side of it are both worth listing. Ten minutes is where that
+// stops — Herzliya -> Kiryat Motzkin at 07:43 with a change, against the 07:59
+// direct that gets in thirteen minutes sooner.
+const CLEARLY_BETTER_MS = 10 * 60 * 1000
 // An itinerary this much longer than the best way to make the same trip has
 // stopped being a slower option and become a wrong answer: riding one stop up the
 // line to sit 34 minutes and catch the train that would have collected you anyway,
 // or waiting an hour to arrive an hour later than the direct service. Both a
-// multiple and a margin, so that short hops aren't judged by ratio alone — a
-// three-minute trip may legitimately take twenty by another route, but not
-// three-quarters of an hour.
+// multiple and a margin, so that short hops aren't judged by ratio alone — but the
+// margin has to be small, because on a short hop even five times as long is only
+// twenty minutes: Tel Aviv HaHagana -> Holon Junction is five minutes direct and
+// twenty-six via Rishon LeTsiyon. The ratio is what protects a genuinely
+// roundabout route that is still in proportion.
 const ABSURDLY_LONG_RATIO = 2
-const ABSURDLY_LONG_MARGIN_MS = 30 * 60 * 1000
+const ABSURDLY_LONG_MARGIN_MS = 10 * 60 * 1000
 // Among itineraries arriving at the same time, prefer fewer changes as long as the
 // fewer-change option is at most this much longer than the shortest one.
 const PREFER_FEWER_CHANGES_WINDOW_MS = 20 * 60 * 1000
