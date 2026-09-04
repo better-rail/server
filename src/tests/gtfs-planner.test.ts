@@ -679,11 +679,35 @@ describe("planTravels", () => {
 
     it("makes the change as early as possible when windows are about the same", () => {
       const trips = table(
-        trip("f1", 10, [[900, "08:00", 1], [2300, "08:30", 1], [2100, "08:40", 1]]),
-        trip("f2", 20, [[2300, "08:42", 1], [2100, "08:52", 1], [999, "09:30", 1]]), // both ~12m
+        // neither shared station is one of the big interchanges, so only timing decides
+        trip("f1", 10, [[900, "08:00", 1], [2300, "08:30", 1], [2200, "08:40", 1]]),
+        trip("f2", 20, [[2300, "08:42", 1], [2200, "08:52", 1], [999, "09:30", 1]]), // both ~12m
       )
       const travels = planTravels(trips, 900, 999, ts("07:00"))
       expect(changeStation(travels)).toBe(2300) // earliest shared station
+    })
+
+    it("changes at Haifa Center rather than Tel Aviv when both are on the way", () => {
+      // Real case: Be'er Sheva -> Kiryat Motzkin. Same trains and the same arrival
+      // either way; Haifa Center is the easier place to be standing.
+      const trips = table(
+        trip("f1", 10, [[900, "08:00", 1], [4900, "08:30", 1], [2100, "09:30", 1]]),
+        trip("f2", 20, [[4900, "08:45", 1], [2100, "09:45", 1], [1400, "10:10", 1]]),
+      )
+      const travels = planTravels(trips, 900, 1400, ts("07:00"))
+      expect(changeStation(travels)).toBe(2100)
+      expect(travels[0].arrivalTime).toBe("2026-06-27T10:10:00") // arrival unchanged
+    })
+
+    it("still refuses a tight change at an interchange when a roomier one exists", () => {
+      // Comfort never costs a connection you might miss: Haifa Center is 4 minutes
+      // here, so the roomier Tel Aviv change wins.
+      const trips = table(
+        trip("f1", 10, [[900, "08:00", 1], [4900, "08:30", 1], [2100, "09:30", 1]]),
+        trip("f2", 20, [[4900, "08:50", 1], [2100, "09:34", 1], [1400, "10:10", 1]]),
+      )
+      const travels = planTravels(trips, 900, 1400, ts("07:00"))
+      expect(changeStation(travels)).toBe(4900)
     })
   })
 })

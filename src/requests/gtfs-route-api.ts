@@ -114,6 +114,15 @@ const MAX_FIRST_TRAINS_SCANNED = 1000
 // Transfer-station preference (same trains & arrival, but a nicer place to change).
 const TLV_STATIONS = new Set([3700, 4600, 4900, 3600]) // Savidor, HaShalom, HaHagana, University
 const SAVIDOR_STATION = 3700
+// The big interchanges people would rather change at than Tel Aviv: fewer
+// crowds, and the platforms are easy. Be'er Sheva to Kiryat Motzkin is a nicer
+// journey broken at Haifa Center than at HaHagana in the rush.
+const POPULAR_CHANGE_STATIONS = new Set([
+  2100, // Haifa Center - HaShmona
+  5000, // Lod
+  2800, // Binyamina
+  5900, // Ashkelon
+])
 const TIGHT_CONNECTION_MS = 6 * 60 * 1000 // a "tight" change
 const LONG_CONNECTION_MS = 30 * 60 * 1000 // a "long" change (wait > 30 min)
 const SIMILAR_WINDOW_MS = 3 * 60 * 1000 // connection windows within this count as "about the same"
@@ -347,6 +356,15 @@ const isBetterTransfer = (a: Boarding, b: Boarding): boolean => {
   const bTight = b.window <= TIGHT_CONNECTION_MS
   // Avoid a tight change when a roomier one is available.
   if (aTight !== bTight) return !aTight
+
+  // Given a comfortable change either way, make it at one of the big
+  // interchanges rather than in Tel Aviv. This sits after the tight-change test
+  // on purpose: comfort is never bought with a connection you might miss, and
+  // `optimizeTransfers` only ever considers stations both trains already call
+  // at, so the trains and the arrival time are untouched either way.
+  const aPopular = POPULAR_CHANGE_STATIONS.has(a.station)
+  const bPopular = POPULAR_CHANGE_STATIONS.has(b.station)
+  if (aPopular !== bPopular) return aPopular
 
   // In Tel Aviv, do an "extreme" change at Savidor (the central hub): one that's
   // very tight (<=6 min) or long (both wait > 30 min). This wins over a larger
