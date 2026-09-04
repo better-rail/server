@@ -91,6 +91,16 @@ const DETOUR_WASTED_TIME_MS = 5 * 60 * 1000
 // roundabout route that is still in proportion.
 const ABSURDLY_LONG_RATIO = 2
 const ABSURDLY_LONG_MARGIN_MS = 10 * 60 * 1000
+// The one shape that needs no comparison to be ruled out: a journey that rides
+// most of the country to make a short trip, and spends the night doing it. Both
+// halves are needed. The ratio alone would take Nahariya -> Karmiel, which is
+// twice the straight line through Kiryat Motzkin because that is where the branch
+// leaves, and Hadera-East -> Migdal Ha'emek, nearly five times it every hour of
+// the day because no line joins the two. The hours alone would take the last
+// train to Karmiel, three hours the same as every other train to Karmiel. Nothing
+// that runs in daylight is both.
+const GROSS_DETOUR_RATIO = 3
+const ALL_NIGHT_MS = 4 * 60 * 60 * 1000
 // Among itineraries arriving at the same time, prefer fewer changes as long as the
 // fewer-change option is at most this much longer than the shortest one.
 const PREFER_FEWER_CHANGES_WINDOW_MS = 20 * 60 * 1000
@@ -798,6 +808,33 @@ export const planLegs = (
       return detour
     }
 
+    // Riding most of the country to make a short trip, and spending the night
+    // doing it. Alone among the rules here this one needs nothing to compare
+    // against, which is the whole point: where the timetable offers a single way
+    // to make a trip, that way sets the standard and so excuses itself, however
+    // absurd it is. Jerusalem -> Pa'ate Modi'in on a Saturday night was the only
+    // listing there was — out to the airport at 23:36, north to Ako, and back
+    // down to Modi'in at 05:54, six and a quarter hours for half an hour's trip.
+    //
+    // Judged on the ground rather than on the timetable: the straight lines from
+    // the origin through each change to the destination, against the straight
+    // line between the two ends.
+    const ridesRoundTheCountry = (c: Candidate): boolean => {
+      if (endToEnd === null || endToEnd <= 0) return false
+      const points = [
+        fromStation,
+        ...c.legs.slice(0, -1).map((leg) => allTrips.get(leg.tripKey)!.stops[leg.alightIndex].railId),
+        toStation,
+      ]
+      let travelled = 0
+      for (let i = 0; i < points.length - 1; i++) {
+        const hop = kmBetween(points[i], points[i + 1])
+        if (hop === null) return false
+        travelled += hop
+      }
+      return travelled > endToEnd * GROSS_DETOUR_RATIO
+    }
+
     // How much changing is reasonable depends on what is actually running, and
     // that changes through the day: the express that makes the trip in one go
     // exists at rush hour and nowhere near midnight. So the standard is the
@@ -830,9 +867,16 @@ export const planLegs = (
         quickestAhead = duration
         quickestAheadChanges = changes
       }
-      // Only when something else already covers the journey. Dimona to Yokne'am at
-      // 10:17 needs three changes and there is no quicker way for six hours —
-      // capping it would leave that rider waiting all afternoon.
+      // No coverage needed for this one: nothing else has to exist for a journey
+      // that goes the long way round the country all night to be the wrong answer.
+      // Waiting for the morning is better, and the morning is on the next page.
+      if (changes > 0 && duration > ALL_NIGHT_MS && ridesRoundTheCountry(c)) {
+        absurd.add(c)
+        continue
+      }
+      // The rest only when something else already covers the journey. Dimona to
+      // Yokne'am at 10:17 needs three changes and there is no quicker way for six
+      // hours — capping it would leave that rider waiting all afternoon.
       if (changes > 0 && (farTooLong || changes > capFor(quickestAheadChanges)) && covered <= c.arrTs) {
         absurd.add(c)
         continue

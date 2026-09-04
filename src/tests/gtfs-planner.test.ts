@@ -254,6 +254,34 @@ describe("planTravels", () => {
     expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[902]])
   })
 
+  it("drops an all-night ride round the country even when it is the only option", () => {
+    // Real case: Jerusalem -> Pa'ate Modi'in, half an hour's trip, on a Saturday
+    // night when nothing else runs. Out to the airport at 23:36, north to Ako,
+    // then back down to Modi'in at 05:54 — 263km of straight lines for a 26km
+    // journey, and the only listing there was, which is why nothing else can be
+    // relied on to displace it. The morning is on the next page.
+    const trips = table(
+      trip("toAirport", 7724, [[680, "23:36", 3], [8600, "23:56", 2]]),
+      trip("north", 7002, [[8600, "24:12", 2], [1500, "25:57", 1]]),
+      trip("south", 5, [[1500, "26:58", 2], [400, "29:06", 1]]),
+      trip("last", 152, [[400, "29:48", 1], [300, "29:54", 2]]),
+    )
+    expect(planTravels(trips, 680, 300, ts("00:00"), ts("24:00"))).toEqual([])
+  })
+
+  it("keeps the long way round when it is not also an all-night ride", () => {
+    // Both halves of that rule are needed. Lod -> Ramla is 2km apart with no late
+    // service between them, so the last train of the night goes 31km around by way
+    // of HaHagana — fifteen times the straight line, and still only 35 minutes.
+    // Distance alone is not what makes a journey the wrong answer.
+    const trips = table(
+      trip("out", 200, [[5000, "23:42", 1], [4900, "23:58", 2]]),
+      trip("back", 202, [[4900, "24:05", 2], [5010, "24:17", 1]]),
+    )
+    const travels = planTravels(trips, 5000, 5010, ts("00:00"), ts("24:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[200, 202]])
+  })
+
   it("drops a change-route a direct train beats by well over the margin", () => {
     // The direct leaves four minutes later and arrives 37 earlier with no change
     // at all — past the point where setting out sooner buys anything.
