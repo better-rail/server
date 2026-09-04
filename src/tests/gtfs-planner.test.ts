@@ -222,15 +222,15 @@ describe("planTravels", () => {
     expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[21]])
   })
 
-  it("keeps a change-route a direct train beats, when it is still a real option", () => {
-    // Real case: Hod HaSharon -> Savidor, where the 20:58 change (arriving 21:41)
-    // stays listed next to the 21:02 direct that gets in at 21:37.
+  it("drops a change-route a direct train beats by well over the margin", () => {
+    // The direct leaves four minutes later and arrives 37 earlier with no change
+    // at all — past the point where setting out sooner buys anything.
     const trips = table(
       trip("legA", 1, [[3700, "04:51", 1], [2300, "05:30", 2]]),
       trip("legB", 2, [[2300, "05:40", 5], [3400, "06:19", 1]]), // arrives 06:19
       trip("fast", 3, [[3700, "04:55", 1], [3400, "05:42", 1]]), // direct, arrives 05:42
     )
-    expect(planTravels(trips, 3700, 3400, ts("03:00")).map((t: any) => t.trains[0].trainNumber)).toEqual([1, 3])
+    expect(planTravels(trips, 3700, 3400, ts("03:00")).map((t: any) => t.trains[0].trainNumber)).toEqual([3])
   })
 
   it("keeps a direct train even when a later departure with a change arrives sooner", () => {
@@ -431,6 +431,33 @@ describe("planTravels", () => {
     )
     const travels = planTravels(trips, 3700, 3400, ts("07:00"))
     expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[100], [200, 201]])
+  })
+
+  it("drops a route another beats outright by a quarter of an hour", () => {
+    // Real case: Netanya-Sapir -> Holon-Wolfson. The 06:26 takes three changes to
+    // arrive 07:38; the 06:32 takes two and arrives 07:23. Later out, sooner in,
+    // one change fewer — the first gives up real time for nothing.
+    const trips = table(
+      trip("a1", 222, [[3310, "06:26", 1], [3300, "06:31", 2]]),
+      trip("a2", 957, [[3300, "06:50", 1], [3600, "07:11", 2]]),
+      trip("a3", 305, [[3600, "07:17", 1], [4660, "07:38", 2]]),
+      trip("b1", 223, [[3310, "06:32", 1], [3600, "06:49", 2]]),
+      trip("b2", 617, [[3600, "07:02", 1], [4660, "07:23", 2]]),
+    )
+    const travels = planTravels(trips, 3310, 4660, ts("05:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[223, 617]])
+  })
+
+  it("keeps a route beaten only narrowly, even on every axis", () => {
+    // Same shape but the margin is four minutes, not fifteen: leaving a little
+    // earlier to arrive a little later is a trade worth offering.
+    const trips = table(
+      trip("legA", 1, [[3700, "20:58", 1], [3500, "21:11", 2]]),
+      trip("legB", 2, [[3500, "21:29", 5], [3400, "21:41", 1]]),
+      trip("direct", 3, [[3700, "21:02", 1], [3400, "21:37", 1]]),
+    )
+    const travels = planTravels(trips, 3700, 3400, ts("20:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[1, 2], [3]])
   })
 
   it("does not split a direct train into a transfer that saves nothing", () => {

@@ -56,6 +56,11 @@ const RELAX_WHEN_SAVES_MS = 20 * 60 * 1000
 // How soon after a departure the same train has to call at the origin before
 // riding out to meet it counts as pointless rather than as a real alternative.
 const REDUNDANT_BOARDING_WINDOW_MS = 30 * 60 * 1000
+// How much sooner another journey has to get there before this one is giving up
+// real time for nothing. Small margins are left alone: leaving four minutes
+// earlier to arrive four minutes later is a trade some riders make, and the
+// options either side of it are both worth listing.
+const CLEARLY_BETTER_MS = 15 * 60 * 1000
 // An itinerary this much longer than the best way to make the same trip has
 // stopped being a slower option and become a wrong answer: riding one stop up the
 // line to sit 34 minutes and catch the train that would have collected you anyway,
@@ -654,9 +659,32 @@ export const planTravels = (
       if (group) group.push(c)
       else atArrival.set(c.arrTs, [c])
     }
+    // And drop one that something else beats outright by a real margin: leaving no
+    // earlier, changing no more often, and getting there at least a quarter of an
+    // hour sooner. Netanya-Sapir -> Holon-Wolfson is the shape — a 06:26 with three
+    // changes arriving 07:38, next to a 06:32 with two arriving 07:23. Later out,
+    // sooner in, one change fewer. Walk latest-departure first so everything
+    // already seen departs no earlier, and only compare against journeys that
+    // survived, so nothing is dropped in favour of something itself dropped.
+    const outclassed = new Set<Candidate>()
+    const bestArrByChanges: number[] = []
+    for (const c of [...listed].sort((a, b) => b.depTs - a.depTs || a.arrTs - b.arrTs)) {
+      const changes = changesOf(c)
+      if (changes > 0) {
+        let best = Infinity
+        for (let k = 0; k <= changes; k++) best = Math.min(best, bestArrByChanges[k] ?? Infinity)
+        if (best <= c.arrTs - CLEARLY_BETTER_MS) {
+          outclassed.add(c)
+          continue
+        }
+      }
+      bestArrByChanges[changes] = Math.min(bestArrByChanges[changes] ?? Infinity, c.arrTs)
+    }
+
     const worthwhile = listed.filter((c) => {
       const changes = changesOf(c)
       if (changes === 0) return true
+      if (outclassed.has(c)) return false
       return !atArrival.get(c.arrTs)!.some((other) => changesOf(other) < changes && other.depTs >= c.depTs)
     })
 
