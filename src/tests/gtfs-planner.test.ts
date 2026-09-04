@@ -260,21 +260,32 @@ describe("planTravels", () => {
     expect(numbers(hidden)).toEqual([230, 622, 232])
   })
 
-  it("hides a stopping train while a later express still gets in first", () => {
-    // The :08 stopping service has nothing to offer against the :15 express: the
-    // express leaves after it and arrives before it. Off-peak, with no express
-    // behind it, the same stopping train is the best there is and stays.
+  it("hides a departure a later one overtakes, but only while that later one runs", () => {
+    // The 08:08 has nothing to offer against the 08:15: the 08:15 leaves after it
+    // and still arrives first. The 08:28 stays — nothing behind it gets in sooner
+    // — and so do the off-peak departures, with nothing overtaking them.
+    const leg = (id: string, n: number, dep: string, mid: string) => trip(id, n, [[3700, dep, 1], [3500, mid, 2]])
+    const onward = (id: string, n: number, dep: string, arr: string) => trip(id, n, [[3500, dep, 3], [3400, arr, 1]])
     const trips = table(
-      trip("stop1", 808, [[3700, "08:08", 1], [3400, "08:40", 1]]),
-      trip("exp1", 815, [[3700, "08:15", 1], [3400, "08:30", 1]]),
-      trip("stop2", 828, [[3700, "08:28", 1], [3400, "09:00", 1]]),
-      trip("stop3", 1008, [[3700, "10:08", 1], [3400, "10:40", 1]]),
-      trip("stop4", 1108, [[3700, "11:08", 1], [3400, "11:40", 1]]),
+      leg("a1", 801, "08:08", "08:20"), onward("a2", 802, "08:26", "08:40"),
+      leg("b1", 811, "08:15", "08:19"), onward("b2", 812, "08:24", "08:30"),
+      leg("c1", 821, "08:28", "08:40"), onward("c2", 822, "08:46", "09:00"),
+      leg("d1", 1001, "10:08", "10:20"), onward("d2", 1002, "10:26", "10:40"),
+      leg("e1", 1101, "11:08", "11:20"), onward("e2", 1102, "11:26", "11:40"),
     )
     const travels = planTravels(trips, 3700, 3400, ts("07:00"))
-    // 08:08 goes; 08:28 stays (nothing after it arrives sooner), and so do the
-    // off-peak departures with no express to beat them.
-    expect(travels.map((t: any) => t.trains[0].trainNumber)).toEqual([815, 828, 1008, 1108])
+    expect(travels.map((t: any) => t.departureTime.slice(11, 16))).toEqual(["08:15", "08:28", "10:08", "11:08"])
+  })
+
+  it("never hides a direct train, whatever overtakes it", () => {
+    // The same shape with single trains: a direct is always a real way to make the
+    // trip and is listed however the timetable is arranged around it.
+    const trips = table(
+      trip("slow", 801, [[3700, "08:08", 1], [3400, "08:40", 1]]),
+      trip("fast", 811, [[3700, "08:15", 1], [3400, "08:30", 1]]),
+    )
+    const travels = planTravels(trips, 3700, 3400, ts("07:00"))
+    expect(travels.map((t: any) => t.departureTime.slice(11, 16))).toEqual(["08:08", "08:15"])
   })
 
   it("hides a route a later departure catches up with (hide slow trains)", () => {

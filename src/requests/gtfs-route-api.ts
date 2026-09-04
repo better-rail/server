@@ -98,9 +98,9 @@ const PREFER_FEWER_CHANGES_WINDOW_MS = 20 * 60 * 1000
 const CATCH_UP_WAIT_MS = 60 * 60 * 1000
 const CATCH_UP_ARRIVAL_TOLERANCE_MS = 15 * 60 * 1000
 // ...but a direct train trailing the best itinerary by no more than this stays
-// listed even so. It matches the margin the default view uses, so the toggle can
-// only ever show less than the plain list, never more.
-const KEEP_DIRECT_WITHIN_MS = CLEARLY_BETTER_MS
+// listed even so — not changing trains is worth a few minutes to most riders.
+// Only the toggle hides a direct at all; the plain list never does.
+const KEEP_DIRECT_WITHIN_MS = 15 * 60 * 1000
 // Three changes is enough to reach the far north and south; beyond that a journey
 // stops being one anybody would make.
 const MAX_ONWARD_ROUNDS = 3 // first train + 3 onward trips => up to 3 transfers
@@ -766,24 +766,22 @@ export const planTravels = (
       changesOf(other) <= changesOf(c) &&
       other.depTs >= c.depTs &&
       other.arrTs <= c.arrTs &&
-      // Getting there meaningfully sooner settles it for any journey, direct
-      // trains included: the stopping service at :08 has nothing to offer while
-      // the express at :15 is running, since the express leaves later and still
-      // gets in first. Off-peak, when no express follows, the :08 is the best
-      // there is and stays — which falls out of comparing only against what
-      // actually departs after it.
+      // Getting there meaningfully sooner settles it: a journey at :08 has nothing
+      // to offer while something at :15 leaves after it and still arrives first.
+      // Off-peak, when nothing follows, the :08 is the best there is and stays —
+      // which falls out of comparing each departure only against what actually
+      // departs after it.
       (other.arrTs <= c.arrTs - CLEARLY_BETTER_MS ||
-        // Wasted time only judges journeys with a change in them. Two direct
-        // trains landing together are two real options — one may be quieter, or
-        // simply the one you can make — and neither is noise.
-        (changesOf(c) > 0 &&
-          c.arrTs - c.depTs - (other.arrTs - other.depTs) >=
-            (leavesTheCorridor(c) ? DETOUR_WASTED_TIME_MS : WASTED_TIME_MS)))
+        c.arrTs - c.depTs - (other.arrTs - other.depTs) >=
+          (leavesTheCorridor(c) ? DETOUR_WASTED_TIME_MS : WASTED_TIME_MS))
 
     const outclassed = new Set<Candidate>()
     const survivors: Candidate[] = []
     for (const c of [...listed].sort((a, b) => b.depTs - a.depTs || a.arrTs - b.arrTs)) {
-      if (survivors.some((other) => beatenBy(c, other))) {
+      // Direct trains are exempt from all of it. Every one is a real train leaving
+      // the origin for the destination, and a rider looking for one expects to see
+      // it whatever else the timetable offers around it.
+      if (changesOf(c) > 0 && survivors.some((other) => beatenBy(c, other))) {
         outclassed.add(c)
         continue
       }
@@ -791,11 +789,9 @@ export const planTravels = (
     }
 
     const worthwhile = listed.filter((c) => {
-      if (outclassed.has(c)) return false
       const changes = changesOf(c)
-      // A direct train is never collapsed away for landing on the same minute as
-      // something else — two of them arriving together are two real options.
       if (changes === 0) return true
+      if (outclassed.has(c)) return false
       return !atArrival.get(c.arrTs)!.some((other) => changesOf(other) < changes && other.depTs >= c.depTs)
     })
 
