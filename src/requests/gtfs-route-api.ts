@@ -496,11 +496,16 @@ export const planTravels = (
   // anyone there after 23:08 with nothing at all. Only the boarding is
   // bounded: a journey that departs in time may run well past midnight, which is
   // exactly what the last connections of the night do.
+  //
+  // Both ends of the window test the displayed time, and they have to agree: a
+  // train that pulls into the origin at 23:58 and leaves at 00:03 belongs to the
+  // night before, and testing the lower bound on departure while the upper one
+  // used the displayed time let it head the following day's list.
   const firstTrains: { tripKey: string; boardIndex: number; depTs: number }[] = []
   for (const trip of allTrips.values()) {
     for (let i = 0; i < trip.stops.length - 1; i++) {
       const stop = trip.stops[i]
-      if (stop.railId === fromStation && stop.depTs >= queryTs && displayTs(stop) <= endTs) {
+      if (stop.railId === fromStation && displayTs(stop) >= queryTs && displayTs(stop) <= endTs) {
         firstTrains.push({ tripKey: trip.tripKey, boardIndex: i, depTs: stop.depTs })
         break
       }
