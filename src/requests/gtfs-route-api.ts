@@ -71,6 +71,13 @@ const CLEARLY_BETTER_MS = 5 * 60 * 1000
 // there are reasons to take a train beyond when it lands, a quieter one among
 // them.
 const WASTED_TIME_MS = 10 * 60 * 1000
+// A journey that goes outside the corridor between the two ends has to justify
+// itself harder, because the detour is the whole of what it costs you. Tel Aviv
+// HaHagana to Kfar Habad by way of Lod-Gane Aviv rides eight minutes past the
+// stop to come back for one minute of arrival, and goes. Lod to Yavne West by way
+// of Ashdod also leaves the corridor, but costs two minutes — and a quieter train
+// is a reason to take it, so it stays.
+const DETOUR_WASTED_TIME_MS = 5 * 60 * 1000
 // An itinerary this much longer than the best way to make the same trip has
 // stopped being a slower option and become a wrong answer: riding one stop up the
 // line to sit 34 minutes and catch the train that would have collected you anyway,
@@ -633,19 +640,26 @@ export const planTravels = (
     // another one leaving no earlier, with no more changes, also arrives no later
     // — which makes this incapable of delaying anyone. Direct trains are never
     // dropped, however far round they go.
-    // A change at a station farther from the destination than the origin is means
-    // riding away from where you are going and doubling back — Hadera-West to Tel
-    // Aviv by way of Binyamina, or Kiryat Gat to Netanya through Be'er Sheva.
-    // Sometimes that is the only way and it has to be offered; when something else
-    // already covers it, it is just a wrong answer. Distance from the destination
-    // is the whole test, so a change genuinely on the way (Netivot to Herzliya
-    // through Tel Aviv) is untouched.
-    const straightLine = kmBetween(fromStation, toStation)
-    const doublesBack = (c: Candidate) =>
-      straightLine !== null &&
+    // A change only makes sense at a station between where you start and where you
+    // are going. Two ways it can fall outside that: farther from the destination
+    // than the origin is, which means riding backwards (Hadera-West to Tel Aviv by
+    // way of Binyamina); or farther from the origin than the destination is, which
+    // means riding straight past your stop to double back (Tel Aviv HaHagana to
+    // Kfar Habad by way of Lod-Gane Aviv, eight minutes beyond it on the same
+    // line). Straight-line distance settles both — the question is only where the
+    // station sits, not how the track runs.
+    //
+    // Sometimes going out of the way is the only way, so this only applies when
+    // another journey already covers the same trip. A change genuinely between the
+    // two ends is never touched: Netivot to Herzliya through Tel Aviv is nearer
+    // Herzliya than Netivot is and nearer Netivot than Herzliya is.
+    const endToEnd = kmBetween(fromStation, toStation)
+    const leavesTheCorridor = (c: Candidate) =>
+      endToEnd !== null &&
       c.travel.trains.slice(0, -1).some((t) => {
-        const fromChange = kmBetween(t.destinationStation, toStation)
-        return fromChange !== null && fromChange > straightLine
+        const toDestination = kmBetween(t.destinationStation, toStation)
+        const fromOrigin = kmBetween(fromStation, t.destinationStation)
+        return (toDestination !== null && toDestination > endToEnd) || (fromOrigin !== null && fromOrigin > endToEnd)
       })
 
     const shortest = Math.min(...candidates.map((c) => c.arrTs - c.depTs))
@@ -657,7 +671,7 @@ export const planTravels = (
       for (let k = 0; k <= changes; k++) covered = Math.min(covered, coveredArrByChanges[k] ?? Infinity)
       const duration = c.arrTs - c.depTs
       const farTooLong = duration > shortest + ABSURDLY_LONG_MARGIN_MS && duration > shortest * ABSURDLY_LONG_RATIO
-      if (changes > 0 && (farTooLong || doublesBack(c)) && covered <= c.arrTs) {
+      if (changes > 0 && farTooLong && covered <= c.arrTs) {
         absurd.add(c)
         continue
       }
@@ -726,7 +740,8 @@ export const planTravels = (
       other.depTs >= c.depTs &&
       other.arrTs <= c.arrTs &&
       (other.arrTs <= c.arrTs - CLEARLY_BETTER_MS ||
-        c.arrTs - c.depTs - (other.arrTs - other.depTs) >= WASTED_TIME_MS)
+        c.arrTs - c.depTs - (other.arrTs - other.depTs) >=
+          (leavesTheCorridor(c) ? DETOUR_WASTED_TIME_MS : WASTED_TIME_MS))
 
     const outclassed = new Set<Candidate>()
     const survivors: Candidate[] = []
