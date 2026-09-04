@@ -8,7 +8,9 @@
  * Planning is a marked-station RAPTOR seeded per candidate first-train, which
  * lists trains by departure (the app's UX) while completing each with the
  * earliest-arrival onward journey of at most three transfers. The network is tiny
- * (~70 stations), so a day's trips are cached in-process and scanned directly.
+ * (~70 stations), so a day's trips are cached in-process and searched over a
+ * per-station index; the plan itself is kept per (feed, day, request) and only
+ * the real-time overlay is redone on each request.
  *
  * Real-time data (delays into trainPosition.calcDiffMinutes, live platform
  * overrides) comes from the SIRI-SM snapshot the poller publishes to redis
@@ -151,7 +153,7 @@ export type PlanOptions = {
   hideSlowTrains?: boolean
 }
 
-type Leg = { tripKey: string; boardIndex: number; alightIndex: number }
+export type Leg = { tripKey: string; boardIndex: number; alightIndex: number }
 
 // arrival_time is the passenger-facing time at every station — the train then
 // dwells until departure_time (Hadera West arrives 09:10, leaves 09:12, and the
@@ -245,10 +247,99 @@ const fetchDayTrips = async (feedId: string, serviceDate: string): Promise<DayTr
   return trips
 }
 
-const invalidateDayCacheForFeed = (feedId: string) => {
-  for (const key of dayCache.keys()) {
-    if (!key.startsWith(`${feedId}#`)) dayCache.delete(key)
+// The merged table a day's search runs over (D-1, D, D+1), and the itineraries
+// planned on it. Both are pure functions of the feed and the request, so they are
+// kept for as long as the feed is active and dropped together when it changes.
+// Plans are legs over the table — a few hundred small objects per entry — so the
+// bound is generous; the least recently used entry goes when it is reached.
+const tableCache = new Map<string, Promise<DayTrips>>()
+const planCache = new Map<string, Leg[][]>()
+const MAX_CACHED_PLANS = 5_000
+
+const loadTable = (feedId: string, serviceDates: string[]): Promise<DayTrips> => {
+  const cacheKey = `${feedId}#${serviceDates.join(",")}`
+  const cached = tableCache.get(cacheKey)
+  if (cached) return cached
+
+  const promise = (async () => {
+    const allTrips: DayTrips = new Map()
+    for (const serviceDate of serviceDates) {
+      const dayTrips = await loadDayTrips(feedId, serviceDate)
+      for (const [key, trip] of dayTrips) allTrips.set(key, trip)
+    }
+    return allTrips
+  })()
+  promise.catch(() => tableCache.delete(cacheKey)) // don't cache failures
+  tableCache.set(cacheKey, promise)
+  return promise
+}
+
+const cachedPlan = (cacheKey: string, plan: () => Leg[][]): Leg[][] => {
+  const hit = planCache.get(cacheKey)
+  if (hit) {
+    // Re-insert so the map's order stays least-recently-used first.
+    planCache.delete(cacheKey)
+    planCache.set(cacheKey, hit)
+    return hit
   }
+  const legs = plan()
+  if (planCache.size >= MAX_CACHED_PLANS) planCache.delete(planCache.keys().next().value!)
+  planCache.set(cacheKey, legs)
+  return legs
+}
+
+/** Keep only `feedId`'s entries in every cache — called when the active feed changes. */
+const invalidateDayCacheForFeed = (feedId: string) => {
+  for (const cache of [dayCache, tableCache, planCache]) {
+    for (const key of cache.keys()) {
+      if (!key.startsWith(`${feedId}#`)) cache.delete(key)
+    }
+  }
+}
+
+// --- station index -------------------------------------------------------------
+
+// A boardable call: a trip at one of its stops other than the last. `ord` is the
+// trip's position in the table, which is the order the search has always visited
+// trips in and therefore the order ties between them are settled in.
+type Call = { trip: TripData; ord: number; index: number; depTs: number }
+
+// Calls per station, sorted by departure, so a search round only touches the
+// trips that leave a marked station inside the connection window rather than
+// every trip in the table. Built once per table: a table is never changed after
+// it is built, and one that has changed size is simply indexed again.
+const stationCalls = new WeakMap<DayTrips, { size: number; calls: Map<number, Call[]> }>()
+
+const callsByStation = (allTrips: DayTrips): Map<number, Call[]> => {
+  const cached = stationCalls.get(allTrips)
+  if (cached && cached.size === allTrips.size) return cached.calls
+
+  const calls = new Map<number, Call[]>()
+  let ord = 0
+  for (const trip of allTrips.values()) {
+    for (let i = 0; i < trip.stops.length - 1; i++) {
+      const stop = trip.stops[i]
+      let list = calls.get(stop.railId)
+      if (!list) calls.set(stop.railId, (list = []))
+      list.push({ trip, ord, index: i, depTs: stop.depTs })
+    }
+    ord++
+  }
+  for (const list of calls.values()) list.sort((a, b) => a.depTs - b.depTs || a.ord - b.ord || a.index - b.index)
+  stationCalls.set(allTrips, { size: allTrips.size, calls })
+  return calls
+}
+
+/** Index of the first call departing at or after `depTs` in a list sorted by departure. */
+const firstCallFrom = (list: Call[], depTs: number): number => {
+  let lo = 0
+  let hi = list.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (list[mid].depTs < depTs) lo = mid + 1
+    else hi = mid
+  }
+  return lo
 }
 
 // --- planner -------------------------------------------------------------------
@@ -289,32 +380,39 @@ const completeJourney = (
   }
   rounds.push(first)
 
+  const calls = callsByStation(allTrips)
   for (let round = 1; round <= maxRounds; round++) {
     const previous = rounds[round - 1]
     if (previous.size === 0) break
-    const current = new Map<number, Label>()
-    for (const trip of allTrips.values()) {
-      if (trip.tripKey === firstTrip.tripKey) continue
-      // Earliest stop where the previous round lets us board within the allowed
-      // connection window: at least the shortest change that station supports,
-      // and no longer than the ceiling in force for this attempt.
-      let bIdx = -1
-      for (let i = 0; i < trip.stops.length - 1; i++) {
-        const stop = trip.stops[i]
-        const ready = previous.get(stop.railId)
-        if (ready === undefined) continue
-        const wait = stop.depTs - ready.arr
-        if (wait >= limits.minAt(stop.railId) && wait <= limits.maxMs) {
-          bIdx = i
-          break
-        }
+    // Each trip's earliest stop where the previous round lets us board within the
+    // allowed connection window: at least the shortest change that station
+    // supports, and no longer than the ceiling in force for this attempt. Only
+    // the calls leaving a marked station inside that window can qualify, so those
+    // are the only ones looked at: a binary search into the station's calls lands
+    // on the first one late enough to make the change.
+    const boardings = new Map<TripData, Call>()
+    for (const [station, ready] of previous) {
+      const list = calls.get(station)
+      if (!list) continue
+      const earliest = ready.arr + limits.minAt(station)
+      const latest = ready.arr + limits.maxMs
+      for (let k = firstCallFrom(list, earliest); k < list.length && list[k].depTs <= latest; k++) {
+        const call = list[k]
+        if (call.trip.tripKey === firstTrip.tripKey) continue
+        const boarding = boardings.get(call.trip)
+        if (!boarding || call.index < boarding.index) boardings.set(call.trip, call)
       }
-      if (bIdx < 0) continue
-      for (let j = bIdx + 1; j < trip.stops.length; j++) {
+    }
+    // Relax in the table's own order, so that of two trips reaching a station at
+    // the same moment the label goes to the one it always went to.
+    const current = new Map<number, Label>()
+    for (const call of [...boardings.values()].sort((a, b) => a.ord - b.ord)) {
+      const trip = call.trip
+      for (let j = call.index + 1; j < trip.stops.length; j++) {
         const s = trip.stops[j]
         const existing = current.get(s.railId)
         if (!existing || s.arrTs < existing.arr) {
-          current.set(s.railId, { arr: s.arrTs, leg: { tripKey: trip.tripKey, boardIndex: bIdx, alightIndex: j } })
+          current.set(s.railId, { arr: s.arrTs, leg: { tripKey: trip.tripKey, boardIndex: call.index, alightIndex: j } })
         }
       }
     }
@@ -492,19 +590,20 @@ const buildTrain = (allTrips: DayTrips, leg: Leg, realtime: RealtimeLookup): Tra
 const localIsoFromTs = (ts: number): string => new Date(ts).toISOString().slice(0, 19)
 
 /**
- * Pure planner: produce `travels` for origin->destination from queryTs, over an
- * already-loaded trip table. Lists trains by departure (the app's UX), completing
- * each with the earliest-arrival onward journey (<=3 transfers).
+ * Pure planner: the itineraries for origin->destination from queryTs, over an
+ * already-loaded trip table, as legs over that table. Lists trains by departure
+ * (the app's UX), completing each with the earliest-arrival onward journey (<=3
+ * transfers). Schedule only: live data is laid over the legs when they are built
+ * into the response (buildTravel), which is what lets a plan be kept and reused.
  */
-export const planTravels = (
+export const planLegs = (
   allTrips: DayTrips,
   fromStation: number,
   toStation: number,
   queryTs: number,
   endTs: number = Infinity,
-  realtime: RealtimeLookup = zeroRealtimeLookup,
   options: PlanOptions = {},
-): RailApiGetRoutesResult["result"]["travels"] => {
+): Leg[][] => {
   // Candidate first trains: those boardable at the origin within [queryTs, endTs].
   // endTs bounds the response to the requested day so it doesn't bleed into the
   // next one (which the client loads as a separate page) — but it is *inclusive*
@@ -519,19 +618,21 @@ export const planTravels = (
   // train that pulls into the origin at 23:58 and leaves at 00:03 belongs to the
   // night before, and testing the lower bound on departure while the upper one
   // used the displayed time let it head the following day's list.
-  const firstTrains: { tripKey: string; boardIndex: number; depTs: number }[] = []
-  for (const trip of allTrips.values()) {
-    for (let i = 0; i < trip.stops.length - 1; i++) {
-      const stop = trip.stops[i]
-      if (stop.railId === fromStation && displayTs(stop) >= queryTs && displayTs(stop) <= endTs) {
-        firstTrains.push({ tripKey: trip.tripKey, boardIndex: i, depTs: stop.depTs })
-        break
-      }
-    }
+  //
+  // Each trip's first call at the origin inside the window, read off the station
+  // index. Trips leaving at the same moment stay in the table's order.
+  const originCalls = new Map<TripData, Call>()
+  for (const call of callsByStation(allTrips).get(fromStation) ?? []) {
+    const stop = call.trip.stops[call.index]
+    if (displayTs(stop) < queryTs || displayTs(stop) > endTs) continue
+    const first = originCalls.get(call.trip)
+    if (!first || call.index < first.index) originCalls.set(call.trip, call)
   }
-  firstTrains.sort((a, b) => a.depTs - b.depTs)
+  const firstTrains = [...originCalls.values()]
+    .sort((a, b) => a.depTs - b.depTs || a.ord - b.ord)
+    .map((call) => ({ tripKey: call.trip.tripKey, boardIndex: call.index, depTs: call.depTs }))
 
-  type Candidate = { travel: RailApiGetRoutesResult["result"]["travels"][number]; depTs: number; arrTs: number }
+  type Candidate = { legs: Leg[]; depTs: number; arrTs: number }
   let candidates: Candidate[] = []
   const seen = new Set<string>()
   let scanned = 0
@@ -623,16 +724,9 @@ export const planTravels = (
       seen.add(key)
 
       if (legs.length > 1) optimizeTransfers(allTrips, legs, limits)
-      const trains = legs.map((leg) => buildTrain(allTrips, leg, realtime))
       const lastLeg = legs[legs.length - 1]
       candidates.push({
-        travel: {
-          departureTime: trains[0].departureTime,
-          arrivalTime: trains[trains.length - 1].arrivalTime,
-          freeSeats: 0,
-          travelMessages: [],
-          trains,
-        },
+        legs,
         // Ordered and compared on the time the rider is *shown*, not the moment
         // the train pulls out. Where a train dwells at the origin the two differ,
         // and ranking by the hidden one puts an itinerary displaying 05:54 ahead
@@ -644,7 +738,7 @@ export const planTravels = (
     }
   }
 
-  const changesOf = (c: Candidate) => c.travel.trains.length - 1
+  const changesOf = (c: Candidate) => c.legs.length - 1
 
   // Default view: withhold nothing a rider could actually use. Someone on the
   // platform can only board what is still to come, so an option is not dropped merely
@@ -678,13 +772,22 @@ export const planTravels = (
     // two ends is never touched: Netivot to Herzliya through Tel Aviv is nearer
     // Herzliya than Netivot is and nearer Netivot than Herzliya is.
     const endToEnd = kmBetween(fromStation, toStation)
-    const leavesTheCorridor = (c: Candidate) =>
-      endToEnd !== null &&
-      c.travel.trains.slice(0, -1).some((t) => {
-        const toDestination = kmBetween(t.destinationStation, toStation)
-        const fromOrigin = kmBetween(fromStation, t.destinationStation)
-        return (toDestination !== null && toDestination > endToEnd) || (fromOrigin !== null && fromOrigin > endToEnd)
-      })
+    const detours = new Map<Candidate, boolean>() // a pure property of the itinerary; settle it once
+    const leavesTheCorridor = (c: Candidate): boolean => {
+      let detour = detours.get(c)
+      if (detour === undefined) {
+        detour =
+          endToEnd !== null &&
+          c.legs.slice(0, -1).some((leg) => {
+            const changeAt = allTrips.get(leg.tripKey)!.stops[leg.alightIndex].railId
+            const toDestination = kmBetween(changeAt, toStation)
+            const fromOrigin = kmBetween(fromStation, changeAt)
+            return (toDestination !== null && toDestination > endToEnd) || (fromOrigin !== null && fromOrigin > endToEnd)
+          })
+        detours.set(c, detour)
+      }
+      return detour
+    }
 
     // How much changing is reasonable depends on what is actually running, and
     // that changes through the day: the express that makes the trip in one go
@@ -819,7 +922,7 @@ export const planTravels = (
     })
 
     worthwhile.sort((a, b) => a.depTs - b.depTs || a.arrTs - b.arrTs)
-    return worthwhile.slice(0, MAX_RESULTS).map((c) => c.travel)
+    return worthwhile.slice(0, MAX_RESULTS).map((c) => c.legs)
   }
 
   // --- "hide slow trains" -------------------------------------------------------
@@ -861,7 +964,7 @@ export const planTravels = (
   // you ride it: the "direct" Netivot->Herzliya (train 638, arriving 12:41) is the
   // same 10:43 boarding as changing off it in Tel Aviv (12:13), just 28 min worse.
   // There's no earlier departure to trade against, so we show only the faster one.
-  const sameFirstTrainKey = (c: Candidate) => `${c.travel.trains[0].trainNumber}@${c.depTs}`
+  const sameFirstTrainKey = (c: Candidate) => `${allTrips.get(c.legs[0].tripKey)!.trainNumber}@${c.depTs}`
 
   // True when a route already kept leaves within the hour after `c`, needs no more
   // changes, and still arrives within the tolerance of it — take that one instead.
@@ -907,8 +1010,34 @@ export const planTravels = (
   }
 
   kept.sort((a, b) => a.depTs - b.depTs)
-  return kept.slice(0, MAX_RESULTS).map((c) => c.travel)
+  return kept.slice(0, MAX_RESULTS).map((c) => c.legs)
 }
+
+type Travel = RailApiGetRoutesResult["result"]["travels"][number]
+
+/** One itinerary in the response shape, with the live data laid over its legs. */
+const buildTravel = (allTrips: DayTrips, legs: Leg[], realtime: RealtimeLookup): Travel => {
+  const trains = legs.map((leg) => buildTrain(allTrips, leg, realtime))
+  return {
+    departureTime: trains[0].departureTime,
+    arrivalTime: trains[trains.length - 1].arrivalTime,
+    freeSeats: 0,
+    travelMessages: [],
+    trains,
+  }
+}
+
+/** The planned itineraries (planLegs) built into the response shape. */
+export const planTravels = (
+  allTrips: DayTrips,
+  fromStation: number,
+  toStation: number,
+  queryTs: number,
+  endTs: number = Infinity,
+  realtime: RealtimeLookup = zeroRealtimeLookup,
+  options: PlanOptions = {},
+): RailApiGetRoutesResult["result"]["travels"] =>
+  planLegs(allTrips, fromStation, toStation, queryTs, endTs, options).map((legs) => buildTravel(allTrips, legs, realtime))
 
 export type ScheduleType = "ByDeparture" | "ByArrival"
 
@@ -938,24 +1067,30 @@ export const searchTrain = async (
   // scrolls to the relevant departure itself.
   const effectiveHour = "00:00"
 
-  // Merge the relevant service days into one trip table.
+  // The relevant service days merged into one trip table, kept per feed and day.
   const serviceDates = railServiceDatesForQuery(date, effectiveHour)
-  const allTrips: DayTrips = new Map()
-  for (const serviceDate of serviceDates) {
-    const dayTrips = await loadDayTrips(feed.feedId, serviceDate)
-    for (const [key, trip] of dayTrips) allTrips.set(key, trip)
-  }
+  const allTrips = await loadTable(feed.feedId, serviceDates)
 
   const queryTs = toEpochMs(date, parseOffsetSec(effectiveHour))
   const endTs = toEpochMs(addDays(date, 1), 0) // inclusive bound: 24:00:00 still counts as today
 
   // Live delays/platforms from the SIRI poller's snapshot in redis. Never
-  // rejects; missing/stale snapshots degrade to schedule-only results.
+  // rejects; missing/stale snapshots degrade to schedule-only results. Read on
+  // every request: only the schedule-side plan is kept, and the live data is
+  // laid over it fresh each time.
   const realtime = makeRealtimeLookup(await getRealtimeSnapshot())
+
+  // The plan is a pure function of the feed, the day and the request, so it is
+  // computed once and kept for as long as the feed is active.
+  const planKey = `${feed.feedId}#${date}#${fromStation}#${toStation}#${options.hideSlowTrains ? 1 : 0}`
+  const legs = cachedPlan(planKey, () => planLegs(allTrips, fromStation, toStation, queryTs, endTs, options))
 
   // Scheduled platforms are baked into stop_times.platform_code at ingest, so the
   // response already carries them (loadDayTrips reads them) — no per-request API call.
-  return { result: { travels: planTravels(allTrips, fromStation, toStation, queryTs, endTs, realtime, options) } }
+  return { result: { travels: legs.map((itinerary) => buildTravel(allTrips, itinerary, realtime)) } }
 }
 
 export { invalidateDayCacheForFeed, loadDayTrips }
+// The search core alone, for tests that check it against a reference implementation.
+export { completeJourney, PREFERRED_LIMITS, TIGHT_LIMITS }
+export type { ConnectionLimits }
