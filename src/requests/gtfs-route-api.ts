@@ -640,8 +640,28 @@ export const planTravels = (
       }
     }
     listed.push(...bestByArrival.values())
-    listed.sort((a, b) => a.depTs - b.depTs || a.arrTs - b.arrTs)
-    return listed.slice(0, MAX_RESULTS).map((c) => c.travel)
+
+    // Finally, drop a journey that buys nothing at all: it lands on the same
+    // minute as one with fewer changes that leaves no earlier, so taking it means
+    // setting out sooner and changing more to arrive at the same moment. Kiryat
+    // Motzkin -> Tel Aviv University is the shape — riding out to Ako at 21:20 to
+    // wait for train 135, which calls at Kiryat Motzkin at 22:04 and reaches the
+    // university at 23:28 either way. Whoever could catch the dropped one can
+    // catch the survivor, so this cannot delay anybody.
+    const atArrival = new Map<number, Candidate[]>()
+    for (const c of listed) {
+      const group = atArrival.get(c.arrTs)
+      if (group) group.push(c)
+      else atArrival.set(c.arrTs, [c])
+    }
+    const worthwhile = listed.filter((c) => {
+      const changes = changesOf(c)
+      if (changes === 0) return true
+      return !atArrival.get(c.arrTs)!.some((other) => changesOf(other) < changes && other.depTs >= c.depTs)
+    })
+
+    worthwhile.sort((a, b) => a.depTs - b.depTs || a.arrTs - b.arrTs)
+    return worthwhile.slice(0, MAX_RESULTS).map((c) => c.travel)
   }
 
   // --- "hide slow trains" -------------------------------------------------------

@@ -408,6 +408,31 @@ describe("planTravels", () => {
     expect(travels.map((t) => t.trains.map((n: { trainNumber: number }) => n.trainNumber))).toEqual([[301], [304, 305]])
   })
 
+  it("drops a change-route that lands with a later, simpler one", () => {
+    // Real case: Kiryat Motzkin -> Tel Aviv University. Riding out to Ako at 21:20
+    // to wait for train 135 arrives 23:28 — exactly when 135 gets there having
+    // picked you up at Kiryat Motzkin at 22:04. Setting out 44 minutes earlier and
+    // changing once more buys nothing at all.
+    const trips = table(
+      trip("out", 128, [[1400, "21:20", 1], [1500, "21:29", 2]]),
+      trip("main", 135, [[1500, "21:53", 3], [1400, "22:04", 1], [3600, "23:28", 2]]),
+    )
+    const travels = planTravels(trips, 1400, 3600, ts("20:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[135]])
+  })
+
+  it("keeps a change-route that lands at the same time but leaves later", () => {
+    // The mirror case: the change-route departs after the direct, so it is not the
+    // one giving something up — both stay listed.
+    const trips = table(
+      trip("direct", 100, [[3700, "08:00", 1], [3400, "09:00", 1]]),
+      trip("legA", 200, [[3700, "08:20", 1], [2300, "08:35", 2]]),
+      trip("legB", 201, [[2300, "08:45", 5], [3400, "09:00", 1]]),
+    )
+    const travels = planTravels(trips, 3700, 3400, ts("07:00"))
+    expect(travels.map((t: any) => t.trains.map((x: any) => x.trainNumber))).toEqual([[100], [200, 201]])
+  })
+
   it("does not split a direct train into a transfer that saves nothing", () => {
     const trips = table(
       trip("a", 301, [[3700, "08:00", 1], [2300, "08:20", 2], [1300, "09:00", 1]]),
