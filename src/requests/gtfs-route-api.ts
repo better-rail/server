@@ -15,6 +15,7 @@
  * (see src/siri/) — when no fresh snapshot exists the response is pure schedule
  * (delay 0), which clients already treat as on-time.
  */
+import stationsGeo from "../data/rail-stations-geo.json"
 import { getActiveFeed, query } from "../db"
 import { logNames, logger } from "../logs"
 import { getRealtimeSnapshot, makeRealtimeLookup, zeroRealtimeLookup } from "../siri/snapshot"
@@ -57,12 +58,12 @@ const RELAX_WHEN_SAVES_MS = 20 * 60 * 1000
 // riding out to meet it counts as pointless rather than as a real alternative.
 const REDUNDANT_BOARDING_WINDOW_MS = 30 * 60 * 1000
 // How much sooner another journey has to get there before this one is giving up
-// real time for nothing. Small margins are left alone: leaving four minutes
-// earlier to arrive four minutes later is a trade some riders make, and the
-// options either side of it are both worth listing. Ten minutes is where that
-// stops — Herzliya -> Kiryat Motzkin at 07:43 with a change, against the 07:59
-// direct that gets in thirteen minutes sooner.
-const CLEARLY_BETTER_MS = 10 * 60 * 1000
+// real time for nothing. Under five minutes is left alone: setting out a little
+// earlier to arrive a little later is a trade some riders make, and both options
+// are worth listing. At five and above it stops being a trade — Ra'anana West ->
+// Lod at 06:08 changing at HaHagana, against the 06:20 that changes at Herzliya
+// and still gets in eight minutes sooner.
+const CLEARLY_BETTER_MS = 5 * 60 * 1000
 // An itinerary this much longer than the best way to make the same trip has
 // stopped being a slower option and become a wrong answer: riding one stop up the
 // line to sit 34 minutes and catch the train that would have collected you anyway,
@@ -134,6 +135,26 @@ type Leg = { tripKey: string; boardIndex: number; alightIndex: number }
 // central hub): its dwell is long enough that the meaningful time is when the
 // train leaves, so show departure_time there.
 const displayTs = (s: StopNode): number => (s.railId === SAVIDOR_STATION ? s.depTs : s.arrTs)
+
+// Station coordinates, for telling a change that is on the way from one that
+// doubles back. Straight-line distance is enough: the question is only whether a
+// station lies beyond where you are going, not how the track runs.
+const coords = new Map<number, { lat: number; lon: number }>(
+  (stationsGeo as { id: string; lat: number; lon: number }[]).map((s) => [Number(s.id), { lat: s.lat, lon: s.lon }]),
+)
+
+/** Kilometres between two stations, or null when either is unknown to the geo data. */
+const kmBetween = (a: number, b: number): number | null => {
+  const from = coords.get(a)
+  const to = coords.get(b)
+  if (!from || !to) return null
+  const rad = Math.PI / 180
+  const h =
+    0.5 -
+    Math.cos((to.lat - from.lat) * rad) / 2 +
+    (Math.cos(from.lat * rad) * Math.cos(to.lat * rad) * (1 - Math.cos((to.lon - from.lon) * rad))) / 2
+  return 12742 * Math.asin(Math.sqrt(h))
+}
 
 const toPlatform = (platformCode: string | null): number => {
   if (!platformCode) return 0
@@ -605,6 +626,21 @@ export const planTravels = (
     // another one leaving no earlier, with no more changes, also arrives no later
     // — which makes this incapable of delaying anyone. Direct trains are never
     // dropped, however far round they go.
+    // A change at a station farther from the destination than the origin is means
+    // riding away from where you are going and doubling back — Hadera-West to Tel
+    // Aviv by way of Binyamina, or Kiryat Gat to Netanya through Be'er Sheva.
+    // Sometimes that is the only way and it has to be offered; when something else
+    // already covers it, it is just a wrong answer. Distance from the destination
+    // is the whole test, so a change genuinely on the way (Netivot to Herzliya
+    // through Tel Aviv) is untouched.
+    const straightLine = kmBetween(fromStation, toStation)
+    const doublesBack = (c: Candidate) =>
+      straightLine !== null &&
+      c.travel.trains.slice(0, -1).some((t) => {
+        const fromChange = kmBetween(t.destinationStation, toStation)
+        return fromChange !== null && fromChange > straightLine
+      })
+
     const shortest = Math.min(...candidates.map((c) => c.arrTs - c.depTs))
     const absurd = new Set<Candidate>()
     const coveredArrByChanges: number[] = []
@@ -614,7 +650,7 @@ export const planTravels = (
       for (let k = 0; k <= changes; k++) covered = Math.min(covered, coveredArrByChanges[k] ?? Infinity)
       const duration = c.arrTs - c.depTs
       const farTooLong = duration > shortest + ABSURDLY_LONG_MARGIN_MS && duration > shortest * ABSURDLY_LONG_RATIO
-      if (changes > 0 && farTooLong && covered <= c.arrTs) {
+      if (changes > 0 && (farTooLong || doublesBack(c)) && covered <= c.arrTs) {
         absurd.add(c)
         continue
       }
